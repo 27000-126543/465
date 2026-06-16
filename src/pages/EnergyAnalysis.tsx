@@ -514,7 +514,9 @@ export default function EnergyAnalysis() {
               <Space wrap>
                 {parsedSchedule.map((s, i) => (
                   <Tag key={i} color="green">
-                    {s.timeRange}: {String(s.startHour).padStart(2, '0')}:00-{String(s.endHour).padStart(2, '0')}:00 @ {s.brightness}%
+                    {s.timeRange}
+                    {s.season && s.season !== '全年' && ` (${s.season})`}
+                    : {String(s.startHour).padStart(2, '0')}:00-{String(s.endHour).padStart(2, '0')}:00 @ {s.brightness}%
                   </Tag>
                 ))}
               </Space>
