@@ -6,7 +6,8 @@ import {
 } from '@/data/mockData'
 import type {
   User, StreetLamp, EnergyConsumption, Alert, WorkOrder,
-  InspectionBatch, EnergyPlan, WeeklyReport, LampType, AlertType
+  InspectionBatch, EnergyPlan, WeeklyReport, LampType, AlertType,
+  DisposalReview, RouteStop
 } from '@/types'
 import dayjs from 'dayjs'
 
@@ -19,6 +20,7 @@ interface DataState {
   allInspectionBatches: InspectionBatch[]
   allEnergyPlans: EnergyPlan[]
   allWeeklyReports: WeeklyReport[]
+  disposalReviews: DisposalReview[]
 
   // 筛选条件
   currentUser: User | null
@@ -69,6 +71,8 @@ interface DataState {
   handleAlert: (alertId: string, handler: string, workOrderId?: string) => void
   generateAlert: (alert: Omit<Alert, 'id' | 'createTime' | 'isHandled'>) => Alert
   updateWorkOrderStatus: (orderId: string, action: 'approve' | 'reject', level: number, approver: string, comment: string) => boolean
+  saveBatchRoute: (batchId: string, route: RouteStop[]) => void
+  getDisposalReview: (workOrderId: string) => DisposalReview | undefined
 
   // 自动预警检查
   runAutoAlertCheck: () => Alert[]
@@ -118,6 +122,7 @@ export const useDataStore = create<DataState>((set, get) => ({
   allInspectionBatches: generateInspectionBatches(),
   allEnergyPlans: generateEnergyPlans(),
   allWeeklyReports: [generateWeeklyReport()],
+  disposalReviews: [],
 
   currentUser: null,
   selectedLampType: 'all',
@@ -285,9 +290,28 @@ export const useDataStore = create<DataState>((set, get) => ({
       city: user.city || order.city
     }
 
-    set(state => ({
-      allWorkOrders: [newOrder, ...state.allWorkOrders]
-    }))
+    const relatedAlertId = (order as any).alertId || (order as any).relatedAlertId
+    
+    set(state => {
+      let newAlerts = state.allAlerts
+      if (relatedAlertId) {
+        newAlerts = state.allAlerts.map(a => {
+          if (a.id === relatedAlertId) {
+            return {
+              ...a,
+              workOrderId: newOrder.id,
+              handlingResult: 'processing' as const,
+              handlingComment: '已生成工单，等待处理'
+            }
+          }
+          return a
+        })
+      }
+      return {
+        allWorkOrders: [newOrder, ...state.allWorkOrders],
+        allAlerts: newAlerts
+      }
+    })
     get().recalculateFiltered()
     return newOrder
   },
@@ -398,7 +422,6 @@ export const useDataStore = create<DataState>((set, get) => ({
           : o
       )
 
-      // 同步更新关联的预警
       let newAlerts = state.allAlerts
       const relatedAlerts = state.allAlerts.filter(a => a.workOrderId === orderId)
       if (relatedAlerts.length > 0) {
@@ -424,13 +447,65 @@ export const useDataStore = create<DataState>((set, get) => ({
         })
       }
 
+      let newReviews = state.disposalReviews
+      if (newStatus === 'completed' || newStatus === 'rejected') {
+        const existing = state.disposalReviews.find(r => r.workOrderId === orderId)
+        if (!existing) {
+          const completedOrder = newWorkOrders.find(o => o.id === orderId)!
+          const roadLamps = state.allLamps.filter(l => 
+            l.province === completedOrder.province &&
+            l.city === completedOrder.city &&
+            l.district === completedOrder.district &&
+            l.road === completedOrder.road
+          )
+          const totalLamps = roadLamps.length || 1
+          const lightRateAfter = Number(((roadLamps.filter(l => l.status === 'normal').length / totalLamps) * 100).toFixed(1))
+          const faultRateAfter = Number(((roadLamps.filter(l => l.status === 'fault').length / totalLamps) * 100).toFixed(1))
+          const lightRateBefore = lightRateAfter + (Math.random() * 5 + 2)
+          const faultRateBefore = faultRateAfter + (Math.random() * 3 + 1)
+
+          const review: DisposalReview = {
+            workOrderId: orderId,
+            approvalTimeline: completedOrder.approvalLog,
+            responseDuration: completedOrder.responseTime || Number(((dayjs(completedOrder.approvalLog[0]?.time).diff(dayjs(completedOrder.createTime), 'minute')) / 60).toFixed(1)) || 2.5,
+            repairDuration: completedOrder.repairTime || Number(((dayjs().diff(dayjs(completedOrder.createTime), 'minute')) / 60).toFixed(1)) || 8,
+            totalCost: completedOrder.cost || Math.floor(Math.random() * 3000 + 500),
+            conclusion: newStatus === 'completed' 
+              ? `工单已完成，${completedOrder.road}路段故障已修复，亮灯率提升${(lightRateBefore - lightRateAfter).toFixed(1)}个百分点` 
+              : `工单已驳回，原因：${comment}`,
+            alertBefore: { lightRate: Number(lightRateBefore.toFixed(1)), faultRate: Number(faultRateBefore.toFixed(1)) },
+            alertAfter: { lightRate: lightRateAfter, faultRate: faultRateAfter },
+            improvement: { 
+              lightRateDelta: Number((lightRateAfter - lightRateBefore).toFixed(1)),
+              faultRateDelta: Number((faultRateAfter - faultRateBefore).toFixed(1))
+            },
+            reviewTime: dayjs().format('YYYY-MM-DD HH:mm:ss')
+          }
+          newReviews = [review, ...state.disposalReviews]
+        }
+      }
+
       return {
         allWorkOrders: newWorkOrders,
-        allAlerts: newAlerts
+        allAlerts: newAlerts,
+        disposalReviews: newReviews
       }
     })
     get().recalculateFiltered()
     return true
+  },
+
+  saveBatchRoute: (batchId, route) => {
+    set(state => ({
+      allInspectionBatches: state.allInspectionBatches.map(b =>
+        b.id === batchId ? { ...b, routeOrder: route } : b
+      )
+    }))
+    get().recalculateFiltered()
+  },
+
+  getDisposalReview: (workOrderId) => {
+    return get().disposalReviews.find(r => r.workOrderId === workOrderId)
   },
 
   runAutoAlertCheck: () => {

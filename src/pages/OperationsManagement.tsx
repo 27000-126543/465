@@ -2,18 +2,19 @@ import { useState, useMemo } from 'react'
 import {
   Row, Col, Card, Table, Tag, Space, Button, Progress,
   Select, DatePicker, Modal, Form, Input, message, List, Typography,
-  Descriptions, Empty, Tabs
+  Descriptions, Empty, Tabs, Tooltip
 } from 'antd'
 import {
   ToolOutlined, CheckCircleOutlined, ClockCircleOutlined,
   DollarOutlined, PlusOutlined, SearchOutlined, TeamOutlined,
   RiseOutlined, FallOutlined, FileTextOutlined, CalendarOutlined,
-  BulbOutlined, AlertOutlined
+  BulbOutlined, AlertOutlined, SwapOutlined, SaveOutlined,
+  ArrowUpOutlined, ArrowDownOutlined, EnvironmentOutlined
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { useDataStore } from '@/store/dataStore'
 import { faultTypeDistribution } from '@/data/mockData'
-import type { InspectionBatch, WorkOrder, StreetLamp, Alert } from '@/types'
+import type { InspectionBatch, WorkOrder, StreetLamp, Alert, RouteStop } from '@/types'
 import dayjs from 'dayjs'
 
 const { RangePicker } = DatePicker
@@ -35,7 +36,8 @@ export default function OperationsManagement() {
     filteredLamps,
     filteredAlerts,
     addWorkOrder,
-    addInspectionBatch
+    addInspectionBatch,
+    saveBatchRoute
   } = useDataStore()
 
   const [activeTab, setActiveTab] = useState('workorders')
@@ -47,6 +49,8 @@ export default function OperationsManagement() {
   const [scheduleTeam, setScheduleTeam] = useState<string>('all')
   const [orderForm] = Form.useForm()
   const [batchForm] = Form.useForm()
+  const [routeSortBy, setRouteSortBy] = useState<'urgency' | 'faultCount' | 'lampCount'>('urgency')
+  const [editedRoute, setEditedRoute] = useState<RouteStop[]>([])
 
   // 运维组列表（从巡检员推断）
   const teams = useMemo(() => {
@@ -61,28 +65,35 @@ export default function OperationsManagement() {
   // 按日期和运维组分组的巡检排班数据
   const scheduleData = useMemo(() => {
     // 扩展批次数据，添加运维组、未完成工单数等信息
-    const batchesWithInfo = filteredInspectionBatches.map(batch => {
-      const relatedOrders = filteredWorkOrders.filter(o => 
-        o.district === batch.district && 
-        batch.roads.some(r => o.road.includes(r) || r.includes(o.road))
-      )
-      const pendingOrders = relatedOrders.filter(o => 
-        ['pending', 'processing', 'approved1', 'approved2'].includes(o.status)
-      )
+    const batchesWithInfo = filteredInspectionBatches
+      .filter(batch => {
+        if (scheduleDate) {
+          return batch.scheduleDate === scheduleDate
+        }
+        return true
+      })
+      .map(batch => {
+        const relatedOrders = filteredWorkOrders.filter(o => 
+          o.district === batch.district && 
+          batch.roads.some(r => o.road.includes(r) || r.includes(o.road))
+        )
+        const pendingOrders = relatedOrders.filter(o => 
+          ['pending', 'processing', 'approved1', 'approved2'].includes(o.status)
+        )
 
-      // 根据巡检员分配运维组
-      let team = '运维一组'
-      if (batch.inspector.includes('李') || batch.inspector.includes('赵')) team = '运维二组'
-      if (batch.inspector.includes('王')) team = '运维三组'
-      if (batch.inspector.includes('钱') || batch.inspector.includes('孙')) team = '运维四组'
+        // 根据巡检员分配运维组
+        let team = '运维一组'
+        if (batch.inspector.includes('李') || batch.inspector.includes('赵')) team = '运维二组'
+        if (batch.inspector.includes('王')) team = '运维三组'
+        if (batch.inspector.includes('钱') || batch.inspector.includes('孙')) team = '运维四组'
 
-      return {
-        ...batch,
-        team,
-        pendingOrderCount: pendingOrders.length,
-        pendingOrders
-      }
-    })
+        return {
+          ...batch,
+          team,
+          pendingOrderCount: pendingOrders.length,
+          pendingOrders
+        }
+      })
 
     // 按日期分组
     const dateGroups = new Map<string, typeof batchesWithInfo>()
@@ -112,7 +123,7 @@ export default function OperationsManagement() {
       date,
       batches: dateGroups.get(date)!
     }))
-  }, [filteredInspectionBatches, filteredWorkOrders, scheduleTeam])
+  }, [filteredInspectionBatches, filteredWorkOrders, scheduleTeam, scheduleDate])
 
   // 获取巡检批次详情
   const getBatchDetail = (batch: InspectionBatch): BatchDetail => {
@@ -141,6 +152,43 @@ export default function OperationsManagement() {
     )
 
     return { batch, faultLamps, pendingAlerts, pendingWorkOrders }
+  }
+
+  const generateRoute = (detail: BatchDetail): RouteStop[] => {
+    const roadStatsMap = new Map<string, { faultCount: number; alertCount: number; pendingOrderCount: number; lampCount: number; district: string }>()
+    
+    detail.batch.roads.forEach(road => {
+      const roadFaults = detail.faultLamps.filter(l => l.road === road).length
+      const roadAlerts = detail.pendingAlerts.filter(a => a.road === road).length
+      const roadOrders = detail.pendingWorkOrders.filter(o => o.road === road || o.road.includes(road)).length
+      const roadLamps = filteredLamps.filter(l => l.road === road && l.province === detail.batch.province && l.city === detail.batch.city).length
+      const district = detail.faultLamps.find(l => l.road === road)?.district || detail.batch.district
+      
+      roadStatsMap.set(road, { faultCount: roadFaults, alertCount: roadAlerts, pendingOrderCount: roadOrders, lampCount: roadLamps || Math.floor(Math.random() * 30 + 10), district })
+    })
+
+    let stops: RouteStop[] = []
+    roadStatsMap.forEach((stats, road) => {
+      const urgency: 'high' | 'medium' | 'low' = 
+        stats.faultCount >= 3 || stats.alertCount >= 2 ? 'high' :
+        stats.faultCount >= 1 || stats.alertCount >= 1 ? 'medium' : 'low'
+      stops.push({ road, district: stats.district, order: 0, faultCount: stats.faultCount, alertCount: stats.alertCount, pendingOrderCount: stats.pendingOrderCount, urgency })
+    })
+
+    if (routeSortBy === 'urgency') {
+      const urgencyOrder = { high: 0, medium: 1, low: 2 }
+      stops.sort((a, b) => {
+        const diff = urgencyOrder[a.urgency] - urgencyOrder[b.urgency]
+        if (diff !== 0) return diff
+        return (b.faultCount + b.alertCount + b.pendingOrderCount) - (a.faultCount + a.alertCount + a.pendingOrderCount)
+      })
+    } else if (routeSortBy === 'faultCount') {
+      stops.sort((a, b) => (b.faultCount + b.alertCount) - (a.faultCount + a.alertCount))
+    } else {
+      stops.sort((a, b) => (b.faultCount + b.alertCount + b.pendingOrderCount) - (a.faultCount + a.alertCount + a.pendingOrderCount))
+    }
+
+    return stops.map((s, i) => ({ ...s, order: i + 1 }))
   }
 
   const workOrderStats = useMemo(() => {
@@ -655,9 +703,9 @@ export default function OperationsManagement() {
           ) : ''
         }
         open={batchDetailVisible}
-        onCancel={() => setBatchDetailVisible(false)}
+        onCancel={() => { setBatchDetailVisible(false); setEditedRoute([]) }}
         footer={null}
-        width={900}
+        width={960}
       >
         {selectedBatchDetail && (
           <div>
@@ -676,6 +724,112 @@ export default function OperationsManagement() {
             </Descriptions>
 
             <Tabs defaultActiveKey="faults">
+              <Tabs.TabPane 
+                tab={<Space><EnvironmentOutlined style={{ color: '#1677ff' }} />路线安排</Space>} 
+                key="route"
+              >
+                {(() => {
+                  const savedRoute = selectedBatchDetail.batch.routeOrder
+                  const autoRoute = generateRoute(selectedBatchDetail)
+                  const displayRoute = editedRoute.length > 0 ? editedRoute : (savedRoute && savedRoute.length > 0 ? savedRoute : autoRoute)
+                  
+                  const moveUp = (idx: number) => {
+                    if (idx === 0) return
+                    const newRoute = [...displayRoute]
+                    ;[newRoute[idx - 1], newRoute[idx]] = [newRoute[idx], newRoute[idx - 1]]
+                    setEditedRoute(newRoute.map((s, i) => ({ ...s, order: i + 1 })))
+                  }
+                  const moveDown = (idx: number) => {
+                    if (idx === displayRoute.length - 1) return
+                    const newRoute = [...displayRoute]
+                    ;[newRoute[idx], newRoute[idx + 1]] = [newRoute[idx + 1], newRoute[idx]]
+                    setEditedRoute(newRoute.map((s, i) => ({ ...s, order: i + 1 })))
+                  }
+                  const handleSaveRoute = () => {
+                    saveBatchRoute(selectedBatchDetail.batch.id, displayRoute)
+                    message.success('巡检路线已保存')
+                  }
+
+                  return (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <Space>
+                          <span style={{ fontSize: 13, fontWeight: 500 }}>排序依据：</span>
+                          <Select
+                            value={routeSortBy}
+                            onChange={(v) => {
+                              setRouteSortBy(v)
+                              setEditedRoute([])
+                            }}
+                            style={{ width: 140 }}
+                            size="small"
+                          >
+                            <Select.Option value="urgency">紧急程度优先</Select.Option>
+                            <Select.Option value="faultCount">故障数量优先</Select.Option>
+                            <Select.Option value="lampCount">路灯数量优先</Select.Option>
+                          </Select>
+                          <Tag color="blue">共 {displayRoute.length} 个路段</Tag>
+                          {savedRoute && savedRoute.length > 0 && <Tag color="green">已保存路线</Tag>}
+                        </Space>
+                        <Space>
+                          {editedRoute.length > 0 && (
+                            <Button size="small" onClick={() => setEditedRoute([])}>
+                              撤销调整
+                            </Button>
+                          )}
+                          <Button type="primary" size="small" icon={<SaveOutlined />} onClick={handleSaveRoute}>
+                            保存路线
+                          </Button>
+                        </Space>
+                      </div>
+                      
+                      <List
+                        size="small"
+                        dataSource={displayRoute}
+                        renderItem={(stop, idx) => (
+                          <List.Item
+                            style={{ 
+                              padding: '10px 12px',
+                              background: stop.urgency === 'high' ? '#fff2f0' : stop.urgency === 'medium' ? '#fff7e6' : '#f6ffed',
+                              borderRadius: 6,
+                              marginBottom: 4,
+                              border: `1px solid ${stop.urgency === 'high' ? '#ffccc7' : stop.urgency === 'medium' ? '#ffe58f' : '#b7eb8f'}`
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', width: '100%', gap: 12 }}>
+                              <div style={{
+                                width: 32, height: 32, borderRadius: '50%',
+                                background: '#1677ff', color: '#fff', display: 'flex',
+                                alignItems: 'center', justifyContent: 'center',
+                                fontWeight: 600, fontSize: 14, flexShrink: 0
+                              }}>
+                                {stop.order}
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                                  <span style={{ fontWeight: 500, fontSize: 13 }}>{stop.road}</span>
+                                  <Tag color={stop.urgency === 'high' ? 'red' : stop.urgency === 'medium' ? 'orange' : 'green'}>
+                                    {stop.urgency === 'high' ? '紧急' : stop.urgency === 'medium' ? '一般' : '常规'}
+                                  </Tag>
+                                </div>
+                                <Space size={12} style={{ fontSize: 12, color: '#666' }}>
+                                  <span><BulbOutlined /> 故障 {stop.faultCount}</span>
+                                  <span><AlertOutlined /> 预警 {stop.alertCount}</span>
+                                  <span><FileTextOutlined /> 工单 {stop.pendingOrderCount}</span>
+                                </Space>
+                              </div>
+                              <Space direction="vertical" size={2}>
+                                <Button size="small" icon={<ArrowUpOutlined />} onClick={() => moveUp(idx)} disabled={idx === 0} style={{ padding: '0 6px' }} />
+                                <Button size="small" icon={<ArrowDownOutlined />} onClick={() => moveDown(idx)} disabled={idx === displayRoute.length - 1} style={{ padding: '0 6px' }} />
+                              </Space>
+                            </div>
+                          </List.Item>
+                        )}
+                      />
+                    </div>
+                  )
+                })()}
+              </Tabs.TabPane>
               <Tabs.TabPane 
                 tab={<Space><BulbOutlined style={{ color: '#ff4d4f' }} />故障灯具 ({selectedBatchDetail.faultLamps.length})</Space>} 
                 key="faults"

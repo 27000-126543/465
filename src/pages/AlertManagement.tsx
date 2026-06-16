@@ -9,7 +9,7 @@ import {
   ExclamationCircleOutlined, ThunderboltOutlined, ToolOutlined, BulbOutlined
 } from '@ant-design/icons'
 import { useDataStore } from '@/store/dataStore'
-import type { Alert, WorkOrder, ApprovalLog, AlertHandlingResult } from '@/types'
+import type { Alert, WorkOrder, ApprovalLog, AlertHandlingResult, DisposalReview } from '@/types'
 import dayjs from 'dayjs'
 
 const { TextArea } = Input
@@ -25,7 +25,8 @@ export default function AlertManagement() {
     setWorkOrderFilters,
     handleAlert,
     addWorkOrder,
-    updateWorkOrderStatus
+    updateWorkOrderStatus,
+    getDisposalReview
   } = useDataStore()
 
   const [activeTab, setActiveTab] = useState('alerts')
@@ -227,10 +228,11 @@ export default function AlertManagement() {
       district: alert.district,
       road: alert.road || alert.district,
       province: alert.province,
-      city: alert.city
-    })
+      city: alert.city,
+      alertId: alert.id
+    } as any)
     handleAlert(alert.id, currentUser.name, newOrder.id)
-    message.success(`已生成工单 ${newOrder.orderNo} 并推送至片区运维组长`)
+    message.success(`已生成工单 ${newOrder.orderNo}，预警已标记为处理中`)
     setActiveTab('workorders')
   }
 
@@ -523,6 +525,48 @@ export default function AlertManagement() {
               </Descriptions>
             )
           })()}
+
+          {selectedAlert.handlingResult === 'completed' || selectedAlert.handlingResult === 'rejected' ? (() => {
+            const review = selectedAlert.workOrderId ? getDisposalReview(selectedAlert.workOrderId) : undefined
+            return review ? (
+              <Card
+                title={<Space><Tag color="green">处置复盘</Tag><span>处置效果分析</span></Space>}
+                size="small"
+                style={{ marginTop: 16 }}
+              >
+                <Descriptions column={2} size="small" bordered>
+                  <Descriptions.Item label="响应时长">{review.responseDuration}小时</Descriptions.Item>
+                  <Descriptions.Item label="维修耗时">{review.repairDuration}小时</Descriptions.Item>
+                  <Descriptions.Item label="维修费用">¥{review.totalCost.toLocaleString()}</Descriptions.Item>
+                  <Descriptions.Item label="复盘时间">{dayjs(review.reviewTime).format('MM-DD HH:mm')}</Descriptions.Item>
+                  <Descriptions.Item label="处理结论" span={2}>{review.conclusion}</Descriptions.Item>
+                </Descriptions>
+                <div style={{ marginTop: 12, padding: 12, background: '#f6ffed', borderRadius: 8, border: '1px solid #b7eb8f' }}>
+                  <div style={{ fontWeight: 500, marginBottom: 8, fontSize: 13, color: '#389e0d' }}>处置效果对比</div>
+                  <Row gutter={16}>
+                    <Col span={12}>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: 12, color: '#666' }}>亮灯率变化</div>
+                        <div style={{ fontSize: 18, fontWeight: 600, color: review.improvement.lightRateDelta > 0 ? '#52c41a' : '#ff4d4f' }}>
+                          {review.improvement.lightRateDelta > 0 ? '+' : ''}{review.improvement.lightRateDelta}%
+                        </div>
+                        <div style={{ fontSize: 11, color: '#999' }}>{review.alertBefore.lightRate}% → {review.alertAfter.lightRate}%</div>
+                      </div>
+                    </Col>
+                    <Col span={12}>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: 12, color: '#666' }}>故障率变化</div>
+                        <div style={{ fontSize: 18, fontWeight: 600, color: review.improvement.faultRateDelta < 0 ? '#52c41a' : '#ff4d4f' }}>
+                          {review.improvement.faultRateDelta > 0 ? '+' : ''}{review.improvement.faultRateDelta}%
+                        </div>
+                        <div style={{ fontSize: 11, color: '#999' }}>{review.alertBefore.faultRate}% → {review.alertAfter.faultRate}%</div>
+                      </div>
+                    </Col>
+                  </Row>
+                </div>
+              </Card>
+            ) : null
+          })() : null}
         </div>
       )}
 
@@ -554,6 +598,48 @@ export default function AlertManagement() {
               <div style={{ fontWeight: 500, marginBottom: 12 }}>三级审批流程</div>
               {renderApprovalTimeline(selectedOrder)}
             </div>
+
+            {(selectedOrder.status === 'completed' || selectedOrder.status === 'rejected') && (() => {
+              const review = getDisposalReview(selectedOrder.id)
+              return review ? (
+                <Card
+                  title={<Space><Tag color="green">处置复盘</Tag><span>处置效果分析</span></Space>}
+                  size="small"
+                  style={{ marginTop: 16 }}
+                >
+                  <Descriptions column={2} size="small" bordered>
+                    <Descriptions.Item label="响应时长">{review.responseDuration}小时</Descriptions.Item>
+                    <Descriptions.Item label="维修耗时">{review.repairDuration}小时</Descriptions.Item>
+                    <Descriptions.Item label="维修费用">¥{review.totalCost.toLocaleString()}</Descriptions.Item>
+                    <Descriptions.Item label="复盘时间">{dayjs(review.reviewTime).format('MM-DD HH:mm')}</Descriptions.Item>
+                    <Descriptions.Item label="处理结论" span={2}>{review.conclusion}</Descriptions.Item>
+                  </Descriptions>
+                  <div style={{ marginTop: 12, padding: 12, background: '#f6ffed', borderRadius: 8, border: '1px solid #b7eb8f' }}>
+                    <div style={{ fontWeight: 500, marginBottom: 8, fontSize: 13, color: '#389e0d' }}>处置效果对比</div>
+                    <Row gutter={16}>
+                      <Col span={12}>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: 12, color: '#666' }}>亮灯率变化</div>
+                          <div style={{ fontSize: 18, fontWeight: 600, color: review.improvement.lightRateDelta > 0 ? '#52c41a' : '#ff4d4f' }}>
+                            {review.improvement.lightRateDelta > 0 ? '+' : ''}{review.improvement.lightRateDelta}%
+                          </div>
+                          <div style={{ fontSize: 11, color: '#999' }}>{review.alertBefore.lightRate}% → {review.alertAfter.lightRate}%</div>
+                        </div>
+                      </Col>
+                      <Col span={12}>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: 12, color: '#666' }}>故障率变化</div>
+                          <div style={{ fontSize: 18, fontWeight: 600, color: review.improvement.faultRateDelta < 0 ? '#52c41a' : '#ff4d4f' }}>
+                            {review.improvement.faultRateDelta > 0 ? '+' : ''}{review.improvement.faultRateDelta}%
+                          </div>
+                          <div style={{ fontSize: 11, color: '#999' }}>{review.alertBefore.faultRate}% → {review.alertAfter.faultRate}%</div>
+                        </div>
+                      </Col>
+                    </Row>
+                  </div>
+                </Card>
+              ) : null
+            })()}
           </div>
         )}
       </Modal>

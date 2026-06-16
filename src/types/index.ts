@@ -183,4 +183,28 @@ export interface InspectionBatch {
   scheduleDate: string;
   inspector: string;
   status: 'pending' | 'in_progress' | 'completed';
+  routeOrder?: RouteStop[];
+}
+
+export interface RouteStop {
+  road: string;
+  district: string;
+  order: number;
+  faultCount: number;
+  alertCount: number;
+  pendingOrderCount: number;
+  urgency: 'high' | 'medium' | 'low';
+}
+
+export interface DisposalReview {
+  workOrderId: string;
+  approvalTimeline: ApprovalLog[];
+  responseDuration: number;
+  repairDuration: number;
+  totalCost: number;
+  conclusion: string;
+  alertBefore: { lightRate: number; faultRate: number };
+  alertAfter: { lightRate: number; faultRate: number };
+  improvement: { lightRateDelta: number; faultRateDelta: number };
+  reviewTime: string;
 }

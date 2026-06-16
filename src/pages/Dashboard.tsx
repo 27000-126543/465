@@ -219,6 +219,28 @@ export default function Dashboard() {
     }).filter(p => p.totalLamps > 0).sort((a, b) => b.savingRate - a.savingRate)
   }, [scopeData, selectedLampType])
 
+  const cityStats = useMemo(() => {
+    if (drillDown.level !== 'province' && drillDown.level !== 'city' && drillDown.level !== 'road') return []
+    const currentProvince = provinceStats.find(p => p.name === drillDown.provinceName)
+    if (!currentProvince) return []
+    return currentProvince.cities.map(c => {
+      let totalLamps = c.totalLamps
+      let lightRate = c.lightRate
+      let savingRate = c.energySavingRate
+      let faultRate = c.faultRate
+      if (selectedLampType !== 'all') {
+        const cityLamps = scopeData.lamps.filter(l => l.province === drillDown.provinceName && l.city === c.name && l.type === selectedLampType)
+        totalLamps = cityLamps.length
+        if (totalLamps > 0) {
+          lightRate = Number(((cityLamps.filter(l => l.status === 'normal').length / totalLamps) * 100).toFixed(2))
+          faultRate = Number(((cityLamps.filter(l => l.status === 'fault').length / totalLamps) * 100).toFixed(2))
+          savingRate = 25
+        }
+      }
+      return { name: c.name, totalLamps, lightRate, savingRate, faultRate }
+    }).filter(c => c.totalLamps > 0).sort((a, b) => b.savingRate - a.savingRate)
+  }, [provinceStats, drillDown.provinceName, drillDown.level, selectedLampType, scopeData.lamps])
+
   // 路段级统计数据
   const roadStats = useMemo((): RoadStats[] => {
     const { lamps, energy } = scopeData
@@ -394,9 +416,23 @@ export default function Dashboard() {
     }
   }, [heatmapData])
 
-  // 柱状图配置
+  // 柱状图配置 - 根据下钻级别显示不同层级
   const barChartOption = useMemo(() => {
-    const data = provinceStats.slice(0, 12)
+    let data: { name: string; lightRate: number; savingRate: number; faultRate: number }[] = []
+    
+    if (drillDown.level === 'national') {
+      data = provinceStats.slice(0, 12)
+    } else if (drillDown.level === 'province') {
+      data = cityStats.slice(0, 12)
+    } else if (drillDown.level === 'city' || drillDown.level === 'road') {
+      data = roadStats.slice(0, 12).map(r => ({
+        name: r.name,
+        lightRate: r.lightRate,
+        savingRate: r.savingRate,
+        faultRate: r.faultRate
+      }))
+    }
+    
     if (data.length === 0) {
       return {
         title: { text: '暂无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
@@ -408,7 +444,7 @@ export default function Dashboard() {
       grid: { left: 50, right: 30, top: 40, bottom: 60 },
       xAxis: {
         type: 'category',
-        data: data.map(d => d.name.replace(/省|市/g, '')),
+        data: data.map(d => d.name.length > 6 ? d.name.slice(0, 6) + '...' : d.name),
         axisLabel: { rotate: 30, fontSize: 11 }
       },
       yAxis: { type: 'value', name: '百分比(%)', max: 100 },
@@ -418,7 +454,7 @@ export default function Dashboard() {
         { name: '故障率(%)', type: 'bar', data: data.map(d => d.faultRate), itemStyle: { color: '#ff4d4f' }, barWidth: 12 }
       ]
     }
-  }, [provinceStats])
+  }, [provinceStats, cityStats, roadStats, drillDown.level])
 
   // 故障率排名
   const rankingOption = useMemo(() => {
