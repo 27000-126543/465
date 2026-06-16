@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import {
   Row, Col, Card, Table, Tag, Space, Button, Progress,
   Select, DatePicker, Modal, Form, Input, message, List, Typography,
-  Descriptions, Empty
+  Descriptions, Empty, Tabs
 } from 'antd'
 import {
   ToolOutlined, CheckCircleOutlined, ClockCircleOutlined,
@@ -617,8 +617,8 @@ export default function OperationsManagement() {
                             <div style={{ fontSize: 12 }}>
                               路段：
                               <Space size={4} wrap style={{ marginLeft: 4 }}>
-                                {batch.roads.slice(0, 3).map((r, i) => <Tag key={i} size="small">{r}</Tag>)}
-                                {batch.roads.length > 3 && <Tag size="small">+{batch.roads.length - 3}</Tag>}
+                                {batch.roads.slice(0, 3).map((r, i) => <Tag key={i}>{r}</Tag>)}
+                                {batch.roads.length > 3 && <Tag>+{batch.roads.length - 3}</Tag>}
                               </Space>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
