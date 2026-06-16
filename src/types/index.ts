@@ -105,6 +105,8 @@ export interface ApprovalLog {
 export type AlertLevel = 1 | 2 | 3;
 export type AlertType = 'light_rate' | 'fault_timeout' | 'energy_abnormal' | 'offline';
 
+export type AlertHandlingResult = 'pending' | 'processing' | 'completed' | 'rejected';
+
 export interface Alert {
   id: string;
   type: AlertType;
@@ -123,6 +125,8 @@ export interface Alert {
   handledTime?: string;
   handler?: string;
   workOrderId?: string;
+  handlingResult?: AlertHandlingResult;
+  handlingComment?: string;
 }
 
 export interface EnergyPlan {

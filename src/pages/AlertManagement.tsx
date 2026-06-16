@@ -1,47 +1,61 @@
 import { useState, useMemo } from 'react'
 import {
   Row, Col, Card, Table, Tag, Space, Button, Modal, Form, Input,
-  Select, Tabs, Timeline, Badge, Descriptions, message, Avatar, List
+  Select, Tabs, Timeline, Badge, Descriptions, message, Typography, Radio
 } from 'antd'
+import type { RadioChangeEvent } from 'antd'
 import {
   AlertOutlined, CheckOutlined, CloseOutlined, ClockCircleOutlined,
   ExclamationCircleOutlined, ThunderboltOutlined, ToolOutlined, BulbOutlined
 } from '@ant-design/icons'
-import { alerts, workOrders } from '@/data/mockData'
-import type { Alert, WorkOrder } from '@/types'
+import { useDataStore } from '@/store/dataStore'
+import type { Alert, WorkOrder, ApprovalLog, AlertHandlingResult } from '@/types'
 import dayjs from 'dayjs'
 
 const { TextArea } = Input
-const { Option } = Select
 
 export default function AlertManagement() {
+  const {
+    currentUser,
+    filteredAlerts,
+    filteredWorkOrders,
+    alertFilters,
+    setAlertFilters,
+    workOrderFilters,
+    setWorkOrderFilters,
+    handleAlert,
+    addWorkOrder,
+    updateWorkOrderStatus
+  } = useDataStore()
+
   const [activeTab, setActiveTab] = useState('alerts')
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
   const [selectedOrder, setSelectedOrder] = useState<WorkOrder | null>(null)
   const [detailVisible, setDetailVisible] = useState(false)
   const [approvalVisible, setApprovalVisible] = useState(false)
   const [approvalLevel, setApprovalLevel] = useState(1)
+  const [approvalAction, setApprovalAction] = useState<'approve' | 'reject'>('approve')
   const [form] = Form.useForm()
 
   const alertStats = useMemo(() => {
-    const unhandled = alerts.filter(a => !a.isHandled)
+    const unhandled = filteredAlerts.filter(a => !a.isHandled)
     return {
-      total: alerts.length,
+      total: filteredAlerts.length,
       unhandled: unhandled.length,
       level1: unhandled.filter(a => a.level === 1).length,
       level2: unhandled.filter(a => a.level === 2).length,
       level3: unhandled.filter(a => a.level === 3).length
     }
-  }, [])
+  }, [filteredAlerts])
 
   const orderStats = useMemo(() => {
     return {
-      total: workOrders.length,
-      pending: workOrders.filter(o => o.status === 'pending').length,
-      processing: workOrders.filter(o => o.status === 'processing' || o.status === 'approved1').length,
-      completed: workOrders.filter(o => o.status === 'completed').length
+      total: filteredWorkOrders.length,
+      pending: filteredWorkOrders.filter(o => o.status === 'pending').length,
+      processing: filteredWorkOrders.filter(o => o.status === 'processing' || o.status === 'approved1').length,
+      completed: filteredWorkOrders.filter(o => o.status === 'completed').length
     }
-  }, [])
+  }, [filteredWorkOrders])
 
   const alertTypeMap: Record<string, { text: string; color: string; icon: JSX.Element }> = {
     light_rate: { text: '亮灯率异常', color: 'red', icon: <BulbOutlined /> },
@@ -80,68 +94,66 @@ export default function AlertManagement() {
     return <Tag color={p.color}>{p.text}</Tag>
   }
 
+  const handlingResultTag = (result?: AlertHandlingResult, comment?: string) => {
+    const map: Record<string, { text: string; color: string }> = {
+      pending: { text: '待处理', color: 'warning' },
+      processing: { text: '处理中', color: 'processing' },
+      completed: { text: '已完成', color: 'success' },
+      rejected: { text: '已驳回', color: 'error' }
+    }
+    if (!result) return null
+    const r = map[result] || { text: result, color: 'default' }
+    return (
+      <Space direction="vertical" size={4}>
+        <Tag color={r.color}>{r.text}</Tag>
+        {comment && <div style={{ fontSize: 12, color: '#666' }}>处理意见：{comment}</div>}
+      </Space>
+    )
+  }
+
   const alertColumns = [
     {
-      title: '预警级别',
-      dataIndex: 'level',
-      key: 'level',
-      width: 100,
+      title: '预警级别', dataIndex: 'level', key: 'level', width: 110,
       render: (level: number) => levelTag(level)
     },
     {
-      title: '预警类型',
-      dataIndex: 'type',
-      key: 'type',
-      width: 120,
+      title: '预警类型', dataIndex: 'type', key: 'type', width: 120,
       render: (type: string) => {
         const t = alertTypeMap[type]
         return <Tag color={t.color} icon={t.icon}>{t.text}</Tag>
       }
     },
+    { title: '预警标题', dataIndex: 'title', key: 'title', ellipsis: true },
     {
-      title: '预警标题',
-      dataIndex: 'title',
-      key: 'title',
-      ellipsis: true
-    },
-    {
-      title: '位置',
-      key: 'location',
-      width: 150,
+      title: '位置', key: 'location', width: 160,
       render: (_: any, record: Alert) => (
-        <span style={{ fontSize: 12, color: '#666' }}>
-          {record.city} · {record.district}
-        </span>
+        <span style={{ fontSize: 12, color: '#666' }}>{record.city} · {record.district}</span>
       )
     },
     {
-      title: '状态',
-      dataIndex: 'isHandled',
-      key: 'isHandled',
-      width: 80,
-      render: (handled: boolean) => (
-        handled ? <Tag color="success">已处理</Tag> : <Tag color="warning">待处理</Tag>
-      )
+      title: '关联工单', dataIndex: 'workOrderId', key: 'workOrderId', width: 130,
+      render: (id?: string) => id ? <Tag color="blue">{id}</Tag> : <Tag color="default">未生成</Tag>
     },
     {
-      title: '生成时间',
-      dataIndex: 'createTime',
-      key: 'createTime',
-      width: 160,
+      title: '状态', key: 'isHandled', width: 100,
+      render: (_: any, record: Alert) => {
+        if (record.handlingResult) {
+          return handlingResultTag(record.handlingResult)
+        }
+        return record.isHandled ? <Tag color="success">已处理</Tag> : <Tag color="warning">待处理</Tag>
+      }
+    },
+    {
+      title: '生成时间', dataIndex: 'createTime', key: 'createTime', width: 140,
       render: (t: string) => dayjs(t).format('MM-DD HH:mm')
     },
     {
-      title: '操作',
-      key: 'action',
-      width: 120,
+      title: '操作', key: 'action', width: 180,
       render: (_: any, record: Alert) => (
         <Space size="small">
-          <Button type="link" size="small" onClick={() => {
-            setSelectedAlert(record)
-            setDetailVisible(true)
-          }}>详情</Button>
+          <Button type="link" size="small" onClick={() => { setSelectedAlert(record); setSelectedOrder(null); setDetailVisible(true) }}>详情</Button>
           {!record.isHandled && (
-            <Button type="link" size="small" onClick={() => handleGenerateOrder(record)}>
+            <Button type="primary" size="small" onClick={() => handleGenerateOrder(record)}>
               生成工单
             </Button>
           )}
@@ -152,103 +164,94 @@ export default function AlertManagement() {
 
   const orderColumns = [
     {
-      title: '工单号',
-      dataIndex: 'orderNo',
-      key: 'orderNo',
-      width: 140,
-      render: (no: string) => <span style={{ fontFamily: 'monospace' }}>{no}</span>
+      title: '工单号', dataIndex: 'orderNo', key: 'orderNo', width: 150,
+      render: (no: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{no}</span>
     },
     {
-      title: '类型',
-      dataIndex: 'type',
-      key: 'type',
-      width: 80,
+      title: '类型', dataIndex: 'type', key: 'type', width: 90,
       render: (type: string) => {
-        const map: Record<string, string> = {
-          fault: '故障维修',
-          inspection: '巡检',
-          emergency: '紧急抢修',
-          adjustment: '调整优化'
-        }
+        const map: Record<string, string> = { fault: '故障维修', inspection: '巡检', emergency: '紧急抢修', adjustment: '调整优化' }
         return <Tag>{map[type] || type}</Tag>
       }
     },
+    { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true },
+    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 70, render: (p: string) => priorityTag(p) },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 120, render: (s: string) => statusTag(s) },
     {
-      title: '标题',
-      dataIndex: 'title',
-      key: 'title',
-      ellipsis: true
-    },
-    {
-      title: '优先级',
-      dataIndex: 'priority',
-      key: 'priority',
-      width: 70,
-      render: (p: string) => priorityTag(p)
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 110,
-      render: (s: string) => statusTag(s)
-    },
-    {
-      title: '位置',
-      key: 'location',
-      width: 130,
+      title: '位置', key: 'location', width: 140,
       render: (_: any, record: WorkOrder) => (
-        <span style={{ fontSize: 12, color: '#666' }}>
-          {record.district} · {record.road}
-        </span>
+        <span style={{ fontSize: 12, color: '#666' }}>{record.district} · {record.road}</span>
       )
     },
+    { title: '负责人', dataIndex: 'assignee', key: 'assignee', width: 90 },
     {
-      title: '负责人',
-      dataIndex: 'assignee',
-      key: 'assignee',
-      width: 80
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'createTime',
-      key: 'createTime',
-      width: 140,
+      title: '创建时间', dataIndex: 'createTime', key: 'createTime', width: 130,
       render: (t: string) => dayjs(t).format('MM-DD HH:mm')
     },
     {
-      title: '操作',
-      key: 'action',
-      width: 150,
-      render: (_: any, record: WorkOrder) => (
-        <Space size="small">
-          <Button type="link" size="small" onClick={() => {
-            setSelectedOrder(record)
-            setDetailVisible(true)
-          }}>详情</Button>
-          {(record.status === 'pending' || record.status === 'processing' || record.status === 'approved1') && (
-            <Button type="link" size="small" onClick={() => {
-              setSelectedOrder(record)
-              const level = record.status === 'pending' ? 1 : record.status === 'processing' ? 1 : 2
-              setApprovalLevel(level)
-              setApprovalVisible(true)
-            }}>审批</Button>
-          )}
-        </Space>
-      )
+      title: '操作', key: 'action', width: 160,
+      render: (_: any, record: WorkOrder) => {
+        const canApprove = ['pending', 'processing', 'approved1', 'approved2'].includes(record.status)
+        return (
+          <Space size="small">
+            <Button type="link" size="small" onClick={() => { setSelectedOrder(record); setSelectedAlert(null); setDetailVisible(true) }}>详情</Button>
+            {canApprove && (
+              <Button type="primary" size="small" onClick={() => {
+                setSelectedOrder(record)
+                setSelectedAlert(null)
+                const level = record.status === 'pending' || record.status === 'processing' ? 1 :
+                  record.status === 'approved1' ? 2 : 3
+                setApprovalLevel(level)
+                setApprovalAction('approve')
+                setApprovalVisible(true)
+              }}>
+                {record.status === 'pending' || record.status === 'processing' ? '组长确认' :
+                  record.status === 'approved1' ? '区市政复核' : '市城管局批准'}
+              </Button>
+            )}
+          </Space>
+        )
+      }
     }
   ]
 
   const handleGenerateOrder = (alert: Alert) => {
-    message.success('已生成维修工单并推送至片区运维组长')
+    if (!currentUser) return
+    const newOrder = addWorkOrder({
+      type: 'emergency',
+      title: `【${alertTypeMap[alert.type].text}】${alert.title}`,
+      description: `${alert.content}\n\n关联预警ID: ${alert.id}`,
+      priority: 'urgent',
+      reporter: currentUser.name,
+      assignee: '运维一组',
+      district: alert.district,
+      road: alert.road || alert.district,
+      province: alert.province,
+      city: alert.city
+    })
+    handleAlert(alert.id, currentUser.name, newOrder.id)
+    message.success(`已生成工单 ${newOrder.orderNo} 并推送至片区运维组长`)
+    setActiveTab('workorders')
   }
 
-  const handleApproval = () => {
+  const handleApproval = (action: 'approve' | 'reject' = approvalAction) => {
     form.validateFields().then((values) => {
-      console.log('审批提交:', values)
-      message.success('审批提交成功')
-      setApprovalVisible(false)
-      form.resetFields()
+      if (!selectedOrder || !currentUser) return
+      const success = updateWorkOrderStatus(
+        selectedOrder.id,
+        action,
+        approvalLevel,
+        currentUser.name,
+        values.comment
+      )
+      if (success) {
+        message.success(action === 'approve' ? '审批通过' : '已驳回')
+        setApprovalVisible(false)
+        form.resetFields()
+        setApprovalAction('approve')
+      } else {
+        message.error('审批失败，当前状态不匹配')
+      }
     })
   }
 
@@ -258,36 +261,44 @@ export default function AlertManagement() {
     { level: 3, title: '市城管局批准', role: '市城市管理局' }
   ]
 
+  const getCurrentStep = (status: string) => {
+    if (status === 'completed' || status === 'rejected') return 3
+    if (status === 'approved2') return 2
+    if (status === 'approved1') return 1
+    return 0
+  }
+
   const renderApprovalTimeline = (order: WorkOrder) => {
     const steps = approvalSteps
-    const currentStep = order.status === 'completed' ? 3 :
-      order.status === 'approved2' ? 2 :
-      order.status === 'approved1' ? 1 : 0
+    const currentStep = getCurrentStep(order.status)
 
     return (
       <Timeline
         items={steps.map((step, idx) => {
           const isDone = idx < currentStep || (idx === currentStep && order.approvalLog.length > idx)
-          const log = order.approvalLog[idx]
+          const isCurrent = idx === currentStep && !isDone
+          const log: ApprovalLog | undefined = order.approvalLog[idx]
+          const isRejected = log?.action === 'reject'
           return {
-            color: isDone ? 'green' : idx === currentStep ? 'blue' : 'gray',
-            dot: isDone ? <CheckOutlined /> : <ClockCircleOutlined />,
+            color: isRejected ? 'red' : isDone ? 'green' : isCurrent ? 'blue' : 'gray',
+            dot: isRejected ? <CloseOutlined /> : isDone ? <CheckOutlined /> : <ClockCircleOutlined />,
             children: (
               <div>
                 <div style={{ fontWeight: 500 }}>
                   {step.title}
                   <span style={{ color: '#999', fontWeight: 'normal', marginLeft: 8 }}>{step.role}</span>
+                  {isCurrent && <Tag color="blue" style={{ marginLeft: 8 }}>当前待办</Tag>}
                 </div>
                 {log ? (
-                  <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
+                  <div style={{ marginTop: 4, fontSize: 12, color: isRejected ? '#ff4d4f' : '#666' }}>
                     <div>{log.approver} {log.action === 'approve' ? '已通过' : '已驳回'}</div>
                     <div>意见：{log.comment}</div>
                     <div>时间：{dayjs(log.time).format('MM-DD HH:mm')}</div>
                   </div>
-                ) : idx === currentStep ? (
-                  <div style={{ marginTop: 4, fontSize: 12, color: '#1677ff' }}>待处理</div>
                 ) : (
-                  <div style={{ marginTop: 4, fontSize: 12, color: '#ccc' }}>等待上一步</div>
+                  <div style={{ marginTop: 4, fontSize: 12, color: isCurrent ? '#1677ff' : '#ccc' }}>
+                    {isCurrent ? '待处理' : '等待上一步'}
+                  </div>
                 )}
               </div>
             )
@@ -297,6 +308,10 @@ export default function AlertManagement() {
     )
   }
 
+  const levelText = currentUser?.level === 'national' ? '全国' :
+    currentUser?.level === 'provincial' ? currentUser.province :
+    currentUser?.level === 'municipal' ? currentUser.city : ''
+
   return (
     <div className="page-container">
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -305,7 +320,7 @@ export default function AlertManagement() {
             <div className="stat-label">待处理预警</div>
             <div className="stat-value">{alertStats.unhandled}</div>
             <div className="stat-trend">
-              <AlertOutlined /> 其中一级预警 {alertStats.level1} 条
+              <AlertOutlined /> 一级预警 {alertStats.level1} 条
             </div>
           </div>
         </Col>
@@ -314,25 +329,25 @@ export default function AlertManagement() {
             <div className="stat-label">待审批工单</div>
             <div className="stat-value">{orderStats.pending + orderStats.processing}</div>
             <div className="stat-trend">
-              <ClockCircleOutlined /> 本月新增 {Math.floor(workOrders.length * 0.6)} 条
+              <ClockCircleOutlined /> 本月新增 {Math.floor(filteredWorkOrders.length * 0.6)} 条
             </div>
           </div>
         </Col>
         <Col xs={12} sm={6}>
           <div className="stat-card green">
             <div className="stat-label">本月完成率</div>
-            <div className="stat-value">{Math.floor((orderStats.completed / orderStats.total) * 100)}%</div>
+            <div className="stat-value">{orderStats.total > 0 ? Math.floor((orderStats.completed / orderStats.total) * 100) : 0}%</div>
             <div className="stat-trend">
-              <CheckOutlined /> 较上月提升 5.2%
+              <CheckOutlined /> {orderStats.completed} / {orderStats.total} 单
             </div>
           </div>
         </Col>
         <Col xs={12} sm={6}>
           <div className="stat-card">
-            <div className="stat-label">平均响应时长</div>
-            <div className="stat-value">2.8h</div>
+            <div className="stat-label">当前范围</div>
+            <div className="stat-value" style={{ fontSize: 24 }}>{levelText}</div>
             <div className="stat-trend">
-              <ClockCircleOutlined /> 较上月缩短 0.6h
+              <Tag color="blue">按权限自动过滤</Tag>
             </div>
           </div>
         </Col>
@@ -341,31 +356,74 @@ export default function AlertManagement() {
       <Card
         className="chart-card"
         tabList={[
-          { key: 'alerts', tab: '预警管理' },
-          { key: 'workorders', tab: '工单与审批' }
+          { key: 'alerts', tab: `预警管理 (${alertStats.unhandled}待处理)` },
+          { key: 'workorders', tab: `工单与审批 (${orderStats.pending + orderStats.processing}待审批)` }
         ]}
         activeTabKey={activeTab}
         onTabChange={setActiveTab}
         extra={
           activeTab === 'alerts' ? (
             <Space>
-              <Select defaultValue="all" style={{ width: 120 }} size="small">
-                <Option value="all">全部级别</Option>
-                <Option value="1">一级预警</Option>
-                <Option value="2">二级预警</Option>
-                <Option value="3">三级预警</Option>
+              <Select
+                value={alertFilters.level}
+                onChange={(v) => setAlertFilters({ level: v })}
+                style={{ width: 110 }}
+                size="small"
+              >
+                <option value="all">全部级别</option>
+                <option value="1">一级预警</option>
+                <option value="2">二级预警</option>
+                <option value="3">三级预警</option>
+              </Select>
+              <Select
+                value={alertFilters.type}
+                onChange={(v) => setAlertFilters({ type: v as any })}
+                style={{ width: 130 }}
+                size="small"
+              >
+                <option value="all">全部类型</option>
+                <option value="light_rate">亮灯率异常</option>
+                <option value="fault_timeout">故障超时</option>
+                <option value="energy_abnormal">能耗异常</option>
+                <option value="offline">设备离线</option>
+              </Select>
+              <Select
+                value={alertFilters.handled}
+                onChange={(v) => setAlertFilters({ handled: v as any })}
+                style={{ width: 110 }}
+                size="small"
+              >
+                <option value="all">全部状态</option>
+                <option value="no">待处理</option>
+                <option value="yes">已处理</option>
               </Select>
               <Button type="primary" size="small">批量处理</Button>
             </Space>
           ) : (
             <Space>
-              <Select defaultValue="all" style={{ width: 120 }} size="small">
-                <Option value="all">全部状态</Option>
-                <Option value="pending">待处理</Option>
-                <Option value="processing">处理中</Option>
-                <Option value="completed">已完成</Option>
+              <Select
+                value={workOrderFilters.status}
+                onChange={(v) => setWorkOrderFilters({ status: v })}
+                style={{ width: 110 }}
+                size="small"
+              >
+                <option value="all">全部状态</option>
+                <option value="pending">待处理</option>
+                <option value="processing">处理中</option>
+                <option value="completed">已完成</option>
+                <option value="rejected">已驳回</option>
               </Select>
-              <Button type="primary" size="small">新建工单</Button>
+              <Select
+                value={workOrderFilters.type}
+                onChange={(v) => setWorkOrderFilters({ type: v })}
+                style={{ width: 110 }}
+                size="small"
+              >
+                <option value="all">全部类型</option>
+                <option value="fault">故障维修</option>
+                <option value="inspection">巡检</option>
+                <option value="emergency">紧急抢修</option>
+              </Select>
             </Space>
           )
         }
@@ -373,18 +431,20 @@ export default function AlertManagement() {
         {activeTab === 'alerts' ? (
           <Table
             columns={alertColumns}
-            dataSource={alerts}
+            dataSource={filteredAlerts}
             rowKey="id"
             pagination={{ pageSize: 10, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
             size="middle"
+            scroll={{ x: 1100 }}
           />
         ) : (
           <Table
             columns={orderColumns}
-            dataSource={workOrders}
+            dataSource={filteredWorkOrders}
             rowKey="id"
             pagination={{ pageSize: 10, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
             size="middle"
+            scroll={{ x: 1200 }}
           />
         )}
       </Card>
@@ -397,35 +457,74 @@ export default function AlertManagement() {
         width={700}
       >
         {selectedAlert && (
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="预警级别">{levelTag(selectedAlert.level)}</Descriptions.Item>
-            <Descriptions.Item label="预警类型">
-              {alertTypeMap[selectedAlert.type]?.text}
-            </Descriptions.Item>
-            <Descriptions.Item label="预警标题">{selectedAlert.title}</Descriptions.Item>
-            <Descriptions.Item label="预警内容">{selectedAlert.content}</Descriptions.Item>
-            <Descriptions.Item label="位置">
-              {selectedAlert.province} · {selectedAlert.city} · {selectedAlert.district}
-              {selectedAlert.road ? ` · ${selectedAlert.road}` : ''}
-            </Descriptions.Item>
-            {selectedAlert.value !== undefined && (
-              <Descriptions.Item label="相关指标">
-                当前值：{selectedAlert.value}，阈值：{selectedAlert.threshold}
+          <div>
+            <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="预警级别">{levelTag(selectedAlert.level)}</Descriptions.Item>
+              <Descriptions.Item label="预警类型">{alertTypeMap[selectedAlert.type]?.text}</Descriptions.Item>
+              <Descriptions.Item label="预警标题">{selectedAlert.title}</Descriptions.Item>
+              <Descriptions.Item label="预警内容">{selectedAlert.content}</Descriptions.Item>
+              <Descriptions.Item label="位置">
+                {selectedAlert.province} · {selectedAlert.city} · {selectedAlert.district}
+                {selectedAlert.road ? ` · ${selectedAlert.road}` : ''}
               </Descriptions.Item>
-            )}
-            <Descriptions.Item label="生成时间">{selectedAlert.createTime}</Descriptions.Item>
-            <Descriptions.Item label="处理状态">
-              {selectedAlert.isHandled ? (
+              {selectedAlert.value !== undefined && (
+                <Descriptions.Item label="相关指标">
+                  当前值：{selectedAlert.value}，阈值：{selectedAlert.threshold}
+                </Descriptions.Item>
+              )}
+              <Descriptions.Item label="生成时间">{selectedAlert.createTime}</Descriptions.Item>
+              <Descriptions.Item label="处理状态">
+                {selectedAlert.handlingResult ? (
+                handlingResultTag(selectedAlert.handlingResult, selectedAlert.handlingComment)
+              ) : selectedAlert.isHandled ? (
                 <Tag color="success">已处理 · {selectedAlert.handler} · {selectedAlert.handledTime}</Tag>
               ) : (
                 <Tag color="warning">待处理</Tag>
               )}
             </Descriptions.Item>
-            {selectedAlert.workOrderId && (
-              <Descriptions.Item label="关联工单">{selectedAlert.workOrderId}</Descriptions.Item>
-            )}
           </Descriptions>
-        )}
+
+          {selectedAlert.workOrderId && (() => {
+            const relatedOrder = filteredWorkOrders.find(o => o.id === selectedAlert.workOrderId)
+            return relatedOrder ? (
+              <Card 
+                title={<Space><Tag color="blue">关联工单</Tag><span style={{ fontFamily: 'monospace' }}>{relatedOrder.orderNo}</span></Space>}
+                size="small"
+                style={{ marginTop: 16 }}
+              >
+                <Descriptions column={2} size="small">
+                  <Descriptions.Item label="工单状态">{statusTag(relatedOrder.status)}</Descriptions.Item>
+                  <Descriptions.Item label="工单类型">
+                    {{ fault: '故障维修', inspection: '巡检', emergency: '紧急抢修', adjustment: '调整优化' }[relatedOrder.type]}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="负责人">{relatedOrder.assignee}</Descriptions.Item>
+                  <Descriptions.Item label="创建时间">{relatedOrder.createTime}</Descriptions.Item>
+                </Descriptions>
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 500, marginBottom: 8, fontSize: 13 }}>审批进度</div>
+                  {renderApprovalTimeline(relatedOrder)}
+                </div>
+                <div style={{ marginTop: 12, textAlign: 'right' }}>
+                  <Button 
+                    type="link" 
+                    size="small"
+                    onClick={() => { setSelectedOrder(relatedOrder); setSelectedAlert(null) }}
+                  >
+                    查看完整工单详情 →
+                  </Button>
+                </div>
+              </Card>
+            ) : (
+              <Descriptions column={1} bordered size="small" style={{ marginTop: 16 }}>
+                <Descriptions.Item label="关联工单">
+                  <Tag color="blue">{selectedAlert.workOrderId}</Tag>
+                  <span style={{ color: '#999', marginLeft: 8 }}>（暂无详情）</span>
+                </Descriptions.Item>
+              </Descriptions>
+            )
+          })()}
+        </div>
+      )}
 
         {selectedOrder && (
           <div>
@@ -462,13 +561,29 @@ export default function AlertManagement() {
       <Modal
         title={`审批 - ${approvalLevel === 1 ? '组长确认' : approvalLevel === 2 ? '区市政复核' : '市城管局批准'}`}
         open={approvalVisible}
-        onOk={handleApproval}
         onCancel={() => setApprovalVisible(false)}
-        okText="通过"
-        cancelText="驳回"
-        okButtonProps={{ type: 'primary' }}
+        footer={[
+          <Button key="cancel" onClick={() => setApprovalVisible(false)}>
+            取消
+          </Button>,
+          <Button key="reject" danger onClick={() => handleApproval('reject')}>
+            驳回
+          </Button>,
+          <Button key="submit" type="primary" onClick={() => handleApproval('approve')}>
+            通过
+          </Button>
+        ]}
       >
         <Form form={form} layout="vertical">
+          <Form.Item label="审批操作" required>
+            <Radio.Group
+              value={approvalAction}
+              onChange={(e: RadioChangeEvent) => setApprovalAction(e.target.value as 'approve' | 'reject')}
+            >
+              <Radio.Button value="approve">同意通过</Radio.Button>
+              <Radio.Button value="reject" style={{ color: '#ff4d4f', borderColor: '#ff4d4f' }}>驳回</Radio.Button>
+            </Radio.Group>
+          </Form.Item>
           <Form.Item
             name="comment"
             label="审批意见"

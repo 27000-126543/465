@@ -60,6 +60,7 @@ interface DataState {
   setSelectedLampType: (type: LampType | 'all') => void
   setAlertFilters: (filters: Partial<DataState['alertFilters']>) => void
   setWorkOrderFilters: (filters: Partial<DataState['workOrderFilters']>) => void
+  recalculateFiltered: () => void
 
   // 增删改操作
   addWorkOrder: (order: Omit<WorkOrder, 'id' | 'orderNo' | 'createTime' | 'status' | 'approvalLog'>) => WorkOrder
@@ -111,7 +112,7 @@ let planSeed = 1000
 
 export const useDataStore = create<DataState>((set, get) => ({
   allLamps: generateLamps(800),
-  allEnergyData: generateEnergyData(120),
+  allEnergyData: generateEnergyData(),
   allAlerts: generateAlerts(60),
   allWorkOrders: generateWorkOrders(120),
   allInspectionBatches: generateInspectionBatches(),
@@ -217,23 +218,22 @@ export const useDataStore = create<DataState>((set, get) => ({
     // 路灯类型过滤
     if (selectedLampType !== 'all') {
       lamps = lamps.filter(l => l.type === selectedLampType)
-      // 按路灯类型过滤后，重新计算城市统计数据
+      // 按路灯类型过滤后，重新计算所有城市统计数据
       provs = provs.map(p => ({
         ...p,
         cities: p.cities.map(c => {
           const cityLamps = lamps.filter(l => l.province === p.name && l.city === c.name)
-          if (cityLamps.length === 0) return c
           const total = cityLamps.length
           const normal = cityLamps.filter(l => l.status === 'normal').length
           const fault = cityLamps.filter(l => l.status === 'fault').length
           return {
             ...c,
             totalLamps: total,
-            lightRate: Number(((normal / total) * 100).toFixed(2)),
-            faultRate: Number(((fault / total) * 100).toFixed(2))
+            lightRate: total > 0 ? Number(((normal / total) * 100).toFixed(2)) : 0,
+            faultRate: total > 0 ? Number(((fault / total) * 100).toFixed(2)) : 0
           }
-        })
-      }))
+        }).filter(c => c.totalLamps > 0) // 过滤掉没有该类型路灯的城市
+      })).filter(p => p.cities.length > 0) // 过滤掉没有该类型城市的省份
     }
 
     // 预警过滤
@@ -391,13 +391,44 @@ export const useDataStore = create<DataState>((set, get) => ({
       else if (level === 3) newStatus = 'completed'
     }
 
-    set(state => ({
-      allWorkOrders: state.allWorkOrders.map(o =>
+    set(state => {
+      const newWorkOrders = state.allWorkOrders.map(o =>
         o.id === orderId
           ? { ...o, status: newStatus, approvalLog: [...o.approvalLog, newLog] }
           : o
       )
-    }))
+
+      // 同步更新关联的预警
+      let newAlerts = state.allAlerts
+      const relatedAlerts = state.allAlerts.filter(a => a.workOrderId === orderId)
+      if (relatedAlerts.length > 0) {
+        let alertHandlingResult: Alert['handlingResult'] = 'processing'
+        if (newStatus === 'completed') alertHandlingResult = 'completed'
+        if (newStatus === 'rejected') alertHandlingResult = 'rejected'
+        if (newStatus === 'approved1') alertHandlingResult = 'processing'
+        if (newStatus === 'approved2') alertHandlingResult = 'processing'
+
+        newAlerts = state.allAlerts.map(a => {
+          if (a.workOrderId === orderId) {
+            return {
+              ...a,
+              isHandled: newStatus === 'completed' || newStatus === 'rejected',
+              handledTime: newStatus === 'completed' || newStatus === 'rejected' 
+                ? dayjs().format('YYYY-MM-DD HH:mm:ss') 
+                : a.handledTime,
+              handlingResult: alertHandlingResult,
+              handlingComment: comment || a.handlingComment
+            }
+          }
+          return a
+        })
+      }
+
+      return {
+        allWorkOrders: newWorkOrders,
+        allAlerts: newAlerts
+      }
+    })
     get().recalculateFiltered()
     return true
   },
@@ -416,16 +447,16 @@ export const useDataStore = create<DataState>((set, get) => ({
       roadGroups.get(key)!.push(lamp)
     })
 
-    // 规则1：路段连续3天亮灯率低于95% (模拟：随机抽查几个路段生成)
+    // 规则1：路段连续3天亮灯率低于95%
     roadGroups.forEach((roadLamps, key) => {
       const [province, city, district, road] = key.split('-')
       const normalCount = roadLamps.filter(l => l.status === 'normal').length
       const lightRate = (normalCount / roadLamps.length) * 100
       
-      if (lightRate < 95 && Math.random() > 0.7) {
-        // 检查是否已存在同类型预警
+      if (lightRate < 95) {
+        // 检查是否已存在同类型未处理预警
         const existing = state.allAlerts.find(a => 
-          a.type === 'light_rate' && a.road === road && !a.isHandled
+          a.type === 'light_rate' && a.road === road && a.city === city && a.province === province && !a.isHandled
         )
         if (!existing) {
           alerts.push(state.generateAlert({

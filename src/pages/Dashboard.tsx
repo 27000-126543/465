@@ -1,16 +1,34 @@
-import { useState, useMemo, useEffect } from 'react'
-import { Row, Col, Select, Space, Card, Tag, Modal, Tabs, Progress, Tooltip } from 'antd'
-import { ArrowUpOutlined, FallOutlined, RiseOutlined, BulbOutlined, ThunderboltOutlined, AlertOutlined } from '@ant-design/icons'
+import { useState, useMemo, useCallback } from 'react'
+import { Row, Col, Select, Space, Card, Tag, Modal, Tabs, Progress, Tooltip, Button, Table, Descriptions } from 'antd'
+import { ArrowUpOutlined, FallOutlined, RiseOutlined, BulbOutlined, ThunderboltOutlined, AlertOutlined, LeftOutlined, HomeOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { useDataStore } from '@/store/dataStore'
-import { useAuthStore } from '@/store/authStore'
 import { faultTypeDistribution, lampTypeDistribution } from '@/data/mockData'
-import type { LampType, City, Province } from '@/types'
+import type { LampType, City, Province, StreetLamp, EnergyConsumption } from '@/types'
 import dayjs from 'dayjs'
 
+interface DrillDownState {
+  level: 'national' | 'province' | 'city' | 'road'
+  provinceName?: string
+  cityName?: string
+  roadName?: string
+  districtName?: string
+}
+
+interface RoadStats {
+  name: string
+  district: string
+  totalLamps: number
+  lightRate: number
+  faultRate: number
+  energyConsumption: number
+  savingRate: number
+  lampTypeBreakdown: Record<LampType, number>
+}
+
 export default function Dashboard() {
-  const { currentUser } = useAuthStore()
   const {
+    currentUser,
     filteredProvinces,
     filteredLamps,
     filteredEnergyData,
@@ -19,21 +37,172 @@ export default function Dashboard() {
     getFilteredStats
   } = useDataStore()
 
-  const [selectedDrillDown, setSelectedDrillDown] = useState<{
-    type: 'province' | 'city'
-    data: Province | City
-    provinceName?: string
-  } | null>(null)
-  const [modalVisible, setModalVisible] = useState(false)
+  const [drillDown, setDrillDown] = useState<DrillDownState>({ level: 'national' })
+  const [detailModalVisible, setDetailModalVisible] = useState(false)
 
-  const stats = useMemo(() => getFilteredStats(), [getFilteredStats])
+  // 根据下钻级别过滤数据
+  const scopeData = useMemo(() => {
+    let lamps = filteredLamps
+    let energy = filteredEnergyData
+    let provinces = filteredProvinces
+    let scopeName = ''
 
+    // 先处理权限过滤后的基础范围
+    if (currentUser?.level === 'provincial') {
+      scopeName = currentUser.province || ''
+      if (drillDown.level === 'national') {
+        drillDown.level = 'province'
+        drillDown.provinceName = currentUser.province
+      }
+    } else if (currentUser?.level === 'municipal') {
+      scopeName = `${currentUser.province} ${currentUser.city}`
+      if (drillDown.level === 'national' || drillDown.level === 'province') {
+        drillDown.level = 'city'
+        drillDown.provinceName = currentUser.province
+        drillDown.cityName = currentUser.city
+      }
+    }
+
+    // 再处理下钻过滤
+    if (drillDown.level === 'province' && drillDown.provinceName) {
+      lamps = lamps.filter(l => l.province === drillDown.provinceName)
+      energy = energy.filter(e => e.province === drillDown.provinceName)
+      provinces = provinces.filter(p => p.name === drillDown.provinceName)
+      scopeName = drillDown.provinceName
+    } else if (drillDown.level === 'city' && drillDown.provinceName && drillDown.cityName) {
+      lamps = lamps.filter(l => l.province === drillDown.provinceName && l.city === drillDown.cityName)
+      energy = energy.filter(e => e.province === drillDown.provinceName && e.city === drillDown.cityName)
+      provinces = provinces.filter(p => p.name === drillDown.provinceName).map(p => ({
+        ...p,
+        cities: p.cities.filter(c => c.name === drillDown.cityName)
+      }))
+      scopeName = `${drillDown.provinceName} ${drillDown.cityName}`
+    } else if (drillDown.level === 'road' && drillDown.provinceName && drillDown.cityName && drillDown.roadName) {
+      lamps = lamps.filter(l => 
+        l.province === drillDown.provinceName && 
+        l.city === drillDown.cityName && 
+        l.road === drillDown.roadName
+      )
+      energy = energy.filter(e => 
+        e.province === drillDown.provinceName && 
+        e.city === drillDown.cityName
+      )
+      provinces = provinces.filter(p => p.name === drillDown.provinceName).map(p => ({
+        ...p,
+        cities: p.cities.filter(c => c.name === drillDown.cityName)
+      }))
+      scopeName = `${drillDown.provinceName} ${drillDown.cityName} ${drillDown.roadName}`
+    } else if (drillDown.level === 'national') {
+      scopeName = '全国'
+    }
+
+    return { lamps, energy, provinces, scopeName }
+  }, [filteredLamps, filteredEnergyData, filteredProvinces, drillDown, currentUser])
+
+  // 计算当前范围的统计数据（考虑灯具类型筛选）
+  const scopeStats = useMemo(() => {
+    const { lamps, energy, provinces } = scopeData
+    
+    // 如果有灯具类型筛选，先过滤
+    const filteredLampsByType = selectedLampType === 'all' 
+      ? lamps 
+      : lamps.filter(l => l.type === selectedLampType)
+
+    let totalLamps = 0
+    let avgLightRate = 0
+    let avgFaultRate = 0
+    let avgSavingRate = 0
+    let totalEnergy = 0
+
+    if (provinces.length > 0 && selectedLampType === 'all') {
+      // 用省份城市的统计数据
+      let cityCount = 0
+      let totalLampCount = 0
+      let totalLight = 0
+      let totalFault = 0
+      let totalSaving = 0
+
+      provinces.forEach(p => {
+        p.cities.forEach(c => {
+          totalLampCount += c.totalLamps
+          totalLight += c.lightRate
+          totalFault += c.faultRate
+          totalSaving += c.energySavingRate
+          cityCount++
+        })
+      })
+
+      if (cityCount > 0) {
+        totalLamps = totalLampCount
+        avgLightRate = Number((totalLight / cityCount).toFixed(2))
+        avgFaultRate = Number((totalFault / cityCount).toFixed(2))
+        avgSavingRate = Number((totalSaving / cityCount).toFixed(2))
+      }
+    } 
+    
+    // 如果有灯具类型筛选，或者没有省份数据，用路灯明细计算
+    if (selectedLampType !== 'all' || provinces.length === 0) {
+      totalLamps = filteredLampsByType.length
+      if (totalLamps > 0) {
+        const normalCount = filteredLampsByType.filter(l => l.status === 'normal').length
+        const faultCount = filteredLampsByType.filter(l => l.status === 'fault').length
+        avgLightRate = Number(((normalCount / totalLamps) * 100).toFixed(2))
+        avgFaultRate = Number(((faultCount / totalLamps) * 100).toFixed(2))
+      }
+      // 节能率用能耗数据计算
+      if (energy.length > 0) {
+        const last30 = energy.slice(-30)
+        const totalBaseline = last30.reduce((s, e) => s + e.baselineConsumption, 0)
+        const totalActual = last30.reduce((s, e) => s + e.actualConsumption, 0)
+        if (totalBaseline > 0) {
+          avgSavingRate = Number((((totalBaseline - totalActual) / totalBaseline) * 100).toFixed(2))
+        }
+      }
+    }
+
+    // 总能耗
+    if (energy.length > 0) {
+      totalEnergy = energy.slice(-30).reduce((s, e) => s + e.actualConsumption, 0)
+    }
+
+    return {
+      totalLamps,
+      avgLightRate,
+      avgFaultRate,
+      avgSavingRate,
+      totalEnergy,
+      lampCount: filteredLampsByType.length
+    }
+  }, [scopeData, selectedLampType])
+
+  // 省份统计（用于热力图和柱状图）
   const provinceStats = useMemo(() => {
-    return filteredProvinces.map(p => {
-      const avgLight = p.cities.reduce((s, c) => s + c.lightRate, 0) / p.cities.length
-      const avgSaving = p.cities.reduce((s, c) => s + c.energySavingRate, 0) / p.cities.length
-      const avgFault = p.cities.reduce((s, c) => s + c.faultRate, 0) / p.cities.length
-      const totalLamps = p.cities.reduce((s, c) => s + c.totalLamps, 0)
+    const { provinces } = scopeData
+    return provinces.map(p => {
+      // 如果有灯具类型筛选，需要重新计算
+      let avgLight = 0
+      let avgSaving = 0
+      let avgFault = 0
+      let totalLamps = 0
+
+      if (selectedLampType === 'all') {
+        avgLight = p.cities.reduce((s, c) => s + c.lightRate, 0) / p.cities.length
+        avgSaving = p.cities.reduce((s, c) => s + c.energySavingRate, 0) / p.cities.length
+        avgFault = p.cities.reduce((s, c) => s + c.faultRate, 0) / p.cities.length
+        totalLamps = p.cities.reduce((s, c) => s + c.totalLamps, 0)
+      } else {
+        // 按类型筛选后重新计算
+        const typeLamps = scopeData.lamps.filter(l => l.province === p.name && l.type === selectedLampType)
+        totalLamps = typeLamps.length
+        if (totalLamps > 0) {
+          const normal = typeLamps.filter(l => l.status === 'normal').length
+          const fault = typeLamps.filter(l => l.status === 'fault').length
+          avgLight = (normal / totalLamps) * 100
+          avgFault = (fault / totalLamps) * 100
+          avgSaving = 25 // 默认值
+        }
+      }
+
       return {
         name: p.name,
         code: p.code,
@@ -41,11 +210,93 @@ export default function Dashboard() {
         savingRate: Number(avgSaving.toFixed(2)),
         faultRate: Number(avgFault.toFixed(2)),
         totalLamps,
-        cities: p.cities
+        cities: p.cities.filter(c => {
+          if (selectedLampType === 'all') return true
+          const cityLamps = scopeData.lamps.filter(l => l.province === p.name && l.city === c.name && l.type === selectedLampType)
+          return cityLamps.length > 0
+        })
       }
-    }).sort((a, b) => b.savingRate - a.savingRate)
-  }, [filteredProvinces])
+    }).filter(p => p.totalLamps > 0).sort((a, b) => b.savingRate - a.savingRate)
+  }, [scopeData, selectedLampType])
 
+  // 路段级统计数据
+  const roadStats = useMemo((): RoadStats[] => {
+    const { lamps, energy } = scopeData
+    if (drillDown.level !== 'city' && drillDown.level !== 'road') return []
+
+    const roadGroups = new Map<string, StreetLamp[]>()
+    lamps.forEach(lamp => {
+      const key = `${lamp.district}-${lamp.road}`
+      if (!roadGroups.has(key)) roadGroups.set(key, [])
+      roadGroups.get(key)!.push(lamp)
+    })
+
+    const roads: RoadStats[] = []
+    roadGroups.forEach((roadLamps, key) => {
+      const [district, road] = key.split('-')
+      const total = roadLamps.length
+      const normal = roadLamps.filter(l => l.status === 'normal').length
+      const fault = roadLamps.filter(l => l.status === 'fault').length
+
+      const typeBreakdown: Record<LampType, number> = {
+        'LED': 0,
+        '高压钠灯': 0,
+        '金卤灯': 0,
+        '无极灯': 0
+      }
+      roadLamps.forEach(l => {
+        typeBreakdown[l.type]++
+      })
+
+      // 找这个路段的能耗数据
+      const roadEnergy = energy.filter(e => e.road === road || e.district === district)
+      let totalConsumption = 0
+      let savingRate = 25
+      if (roadEnergy.length > 0) {
+        const last7 = roadEnergy.slice(-7)
+        totalConsumption = last7.reduce((s, e) => s + e.actualConsumption, 0)
+        const totalBaseline = last7.reduce((s, e) => s + e.baselineConsumption, 0)
+        if (totalBaseline > 0) {
+          savingRate = Number((((totalBaseline - totalConsumption) / totalBaseline) * 100).toFixed(1))
+        }
+      }
+
+      roads.push({
+        name: road,
+        district,
+        totalLamps: total,
+        lightRate: Number(((normal / total) * 100).toFixed(1)),
+        faultRate: Number(((fault / total) * 100).toFixed(1)),
+        energyConsumption: totalConsumption,
+        savingRate,
+        lampTypeBreakdown: typeBreakdown
+      })
+    })
+
+    return roads.sort((a, b) => b.totalLamps - a.totalLamps)
+  }, [scopeData, drillDown.level])
+
+  // 灯具类型分布（根据当前范围动态计算）
+  const currentLampTypeDist = useMemo(() => {
+    const { lamps } = scopeData
+    const typeCounts: Record<string, number> = {
+      'LED': 0,
+      '高压钠灯': 0,
+      '金卤灯': 0,
+      '无极灯': 0
+    }
+    lamps.forEach(l => typeCounts[l.type]++)
+    const total = lamps.length
+    return Object.entries(typeCounts)
+      .filter(([_, count]) => count > 0)
+      .map(([type, count]) => ({
+        type,
+        count,
+        percent: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0
+      }))
+  }, [scopeData])
+
+  // 热力图数据
   const heatmapData = useMemo(() => {
     return provinceStats.map(p => ({
       name: p.name,
@@ -56,9 +307,14 @@ export default function Dashboard() {
     }))
   }, [provinceStats])
 
-  // 全国热力图 - 用省份网格（颜色深浅表示节能率）
+  // 热力图配置
   const heatmapOption = useMemo(() => {
     const data = heatmapData
+    if (data.length === 0) {
+      return {
+        title: { text: '暂无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+      }
+    }
     const maxVal = Math.max(...data.map(d => d.value))
     const minVal = Math.min(...data.map(d => d.value))
     
@@ -138,8 +394,14 @@ export default function Dashboard() {
     }
   }, [heatmapData])
 
+  // 柱状图配置
   const barChartOption = useMemo(() => {
     const data = provinceStats.slice(0, 12)
+    if (data.length === 0) {
+      return {
+        title: { text: '暂无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+      }
+    }
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       legend: { data: ['亮灯率(%)', '节能率(%)', '故障率(%)'], top: 0 },
@@ -158,15 +420,37 @@ export default function Dashboard() {
     }
   }, [provinceStats])
 
+  // 故障率排名
   const rankingOption = useMemo(() => {
-    const allCities = filteredProvinces.flatMap(p =>
-      p.cities.map(c => ({
-        name: `${p.name}-${c.name}`,
-        faultRate: c.faultRate,
-        totalLamps: c.totalLamps,
-        lightRate: c.lightRate
+    const { provinces } = scopeData
+    let items: { name: string; faultRate: number; totalLamps: number; lightRate: number }[] = []
+
+    if (drillDown.level === 'national' || drillDown.level === 'province') {
+      // 城市排名
+      items = provinces.flatMap(p =>
+        p.cities.map(c => ({
+          name: `${p.name}-${c.name}`,
+          faultRate: c.faultRate,
+          totalLamps: c.totalLamps,
+          lightRate: c.lightRate
+        }))
+      )
+    } else if (drillDown.level === 'city') {
+      // 路段排名
+      items = roadStats.map(r => ({
+        name: r.name,
+        faultRate: r.faultRate,
+        totalLamps: r.totalLamps,
+        lightRate: r.lightRate
       }))
-    ).sort((a, b) => b.faultRate - a.faultRate).slice(0, 10)
+    }
+
+    const sorted = items.sort((a, b) => b.faultRate - a.faultRate).slice(0, 10)
+    if (sorted.length === 0) {
+      return {
+        title: { text: '暂无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+      }
+    }
 
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
@@ -174,12 +458,12 @@ export default function Dashboard() {
       xAxis: { type: 'value', name: '故障率(%)' },
       yAxis: {
         type: 'category',
-        data: allCities.map(c => c.name).reverse(),
+        data: sorted.map(c => c.name).reverse(),
         axisLabel: { fontSize: 11 }
       },
       series: [{
         type: 'bar',
-        data: allCities.map(c => c.faultRate).reverse(),
+        data: sorted.map(c => c.faultRate).reverse(),
         itemStyle: {
           color: (params: any) => {
             const rate = params.data
@@ -193,21 +477,41 @@ export default function Dashboard() {
         barWidth: 16
       }]
     }
-  }, [filteredProvinces])
+  }, [scopeData, drillDown.level, roadStats])
 
+  // 能耗趋势
   const energyTrendOption = useMemo(() => {
-    const last30 = filteredEnergyData.slice(-30)
-    if (last30.length === 0) return {
-      tooltip: { trigger: 'axis' },
-      title: { text: '暂无能耗数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+    const { energy } = scopeData
+    const last30 = energy.slice(-30)
+    if (last30.length === 0) {
+      return {
+        tooltip: { trigger: 'axis' },
+        title: { text: '暂无能耗数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+      }
     }
+
+    // 按日期聚合
+    const dateMap = new Map<string, { actual: number; baseline: number; saving: number }>()
+    last30.forEach(e => {
+      const existing = dateMap.get(e.date) || { actual: 0, baseline: 0, saving: 0 }
+      existing.actual += e.actualConsumption
+      existing.baseline += e.baselineConsumption
+      existing.saving += e.savingAmount
+      dateMap.set(e.date, existing)
+    })
+
+    const sortedDates = Array.from(dateMap.keys()).sort()
+    const actualData = sortedDates.map(d => dateMap.get(d)!.actual)
+    const baselineData = sortedDates.map(d => dateMap.get(d)!.baseline)
+    const savingData = sortedDates.map(d => dateMap.get(d)!.saving)
+
     return {
       tooltip: { trigger: 'axis' },
       legend: { data: ['实际能耗', '基准能耗', '节能量'], right: 10, top: 0 },
       grid: { left: 60, right: 40, top: 40, bottom: 30 },
       xAxis: {
         type: 'category',
-        data: last30.map(d => dayjs(d.date).format('MM-DD')),
+        data: sortedDates.map(d => dayjs(d).format('MM-DD')),
         axisLabel: { fontSize: 10 }
       },
       yAxis: { type: 'value', name: 'kWh' },
@@ -215,7 +519,7 @@ export default function Dashboard() {
         {
           name: '实际能耗',
           type: 'line',
-          data: last30.map(d => d.actualConsumption),
+          data: actualData,
           smooth: true,
           itemStyle: { color: '#1677ff' },
           areaStyle: { opacity: 0.1 }
@@ -223,7 +527,7 @@ export default function Dashboard() {
         {
           name: '基准能耗',
           type: 'line',
-          data: last30.map(d => d.baselineConsumption),
+          data: baselineData,
           smooth: true,
           lineStyle: { type: 'dashed' },
           itemStyle: { color: '#999' }
@@ -231,18 +535,22 @@ export default function Dashboard() {
         {
           name: '节能量',
           type: 'bar',
-          data: last30.map(d => d.savingAmount),
+          data: savingData,
           itemStyle: { color: '#52c41a', opacity: 0.6 },
           barWidth: 6
         }
       ]
     }
-  }, [filteredEnergyData])
+  }, [scopeData])
 
+  // 路灯类型饼图
   const pieOption = useMemo(() => {
-    const filteredTypes = selectedLampType === 'all'
-      ? lampTypeDistribution
-      : lampTypeDistribution.filter(d => d.type === selectedLampType)
+    const filteredTypes = currentLampTypeDist
+    if (filteredTypes.length === 0) {
+      return {
+        title: { text: '暂无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+      }
+    }
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c}盏 ({d}%)' },
       legend: { orient: 'vertical', right: 10, top: 'center' },
@@ -256,9 +564,24 @@ export default function Dashboard() {
         color: ['#1677ff', '#52c41a', '#faad14', '#722ed1']
       }]
     }
-  }, [selectedLampType])
+  }, [currentLampTypeDist])
 
+  // 故障类型饼图
   const faultPieOption = useMemo(() => {
+    const { lamps } = scopeData
+    const faultLamps = lamps.filter(l => l.status === 'fault')
+    if (faultLamps.length === 0) {
+      return {
+        title: { text: '暂无故障数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } }
+      }
+    }
+
+    const typeCounts: Record<string, number> = {}
+    faultLamps.forEach(l => {
+      const type = l.faultType || '未知'
+      typeCounts[type] = (typeCounts[type] || 0) + 1
+    })
+
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c}起 ({d}%)' },
       legend: { orient: 'vertical', right: 10, top: 'center' },
@@ -268,94 +591,263 @@ export default function Dashboard() {
         center: ['35%', '50%'],
         avoidLabelOverlap: false,
         label: { show: false },
-        data: faultTypeDistribution.map(d => ({ name: d.type, value: d.count })),
+        data: Object.entries(typeCounts).map(([name, value]) => ({ name, value })),
         color: ['#ff4d4f', '#faad14', '#1677ff', '#52c41a', '#722ed1', '#13c2c2']
       }]
     }
-  }, [])
+  }, [scopeData])
 
+  // 路段能耗趋势
   const roadEnergyOption = useMemo(() => {
-    if (!selectedDrillDown) return {}
-    const roads = ['中山路1段', '人民路2段', '建设路3段', '解放路4段', '文化路5段', '科技路6段']
+    if (roadStats.length === 0) return {}
+    const topRoads = roadStats.slice(0, 4)
     return {
       tooltip: { trigger: 'axis' },
-      legend: { data: roads.slice(0, 4), top: 0, type: 'scroll' },
+      legend: { data: topRoads.map(r => r.name), top: 0, type: 'scroll' },
       grid: { left: 50, right: 20, top: 40, bottom: 30 },
       xAxis: {
         type: 'category',
         data: Array.from({ length: 7 }, (_, i) => dayjs().subtract(6 - i, 'day').format('MM-DD'))
       },
       yAxis: { type: 'value', name: 'kWh' },
-      series: roads.slice(0, 4).map((road, idx) => ({
-        name: road,
+      series: topRoads.map((road, idx) => ({
+        name: road.name,
         type: 'line',
         smooth: true,
-        data: Array.from({ length: 7 }, () => Math.floor(Math.random() * 4000 + 3000))
+        data: Array.from({ length: 7 }, () => Math.floor(road.energyConsumption / 7 * (0.8 + Math.random() * 0.4)))
       }))
     }
-  }, [selectedDrillDown])
+  }, [roadStats])
 
+  // 面包屑导航
+  const breadcrumbs = useMemo(() => {
+    const items: { label: string; onClick?: () => void }[] = []
+    if (currentUser?.level !== 'provincial' && currentUser?.level !== 'municipal') {
+      items.push({ label: '全国', onClick: () => setDrillDown({ level: 'national' }) })
+    }
+    if (drillDown.provinceName) {
+      items.push({ 
+        label: drillDown.provinceName, 
+        onClick: () => currentUser?.level !== 'provincial' && currentUser?.level !== 'municipal' 
+          ? setDrillDown({ level: 'province', provinceName: drillDown.provinceName }) 
+          : undefined 
+      })
+    }
+    if (drillDown.cityName) {
+      items.push({ 
+        label: drillDown.cityName, 
+        onClick: () => currentUser?.level !== 'municipal'
+          ? setDrillDown({ level: 'city', provinceName: drillDown.provinceName, cityName: drillDown.cityName })
+          : undefined
+      })
+    }
+    if (drillDown.roadName) {
+      items.push({ label: drillDown.roadName })
+    }
+    return items
+  }, [drillDown, currentUser])
+
+  // 点击热力图省份
   const handleHeatmapClick = (params: any) => {
     if (params.componentType === 'series') {
       const provinceName = heatmapData[params.data[0]]?.name
-      const province = filteredProvinces.find(p => p.name === provinceName)
-      if (province) {
-        setSelectedDrillDown({ type: 'province', data: province })
-        setModalVisible(true)
+      if (provinceName) {
+        setDrillDown({ level: 'province', provinceName })
       }
     }
   }
 
-  const handleCityClick = (city: City, provinceName: string) => {
-    setSelectedDrillDown({ type: 'city', data: city, provinceName })
-    setModalVisible(true)
-  }
+  // 点击城市
+  const handleCityClick = useCallback((city: City, provinceName: string) => {
+    setDrillDown({ level: 'city', provinceName, cityName: city.name })
+  }, [])
+
+  // 点击路段
+  const handleRoadClick = useCallback((road: RoadStats) => {
+    setDrillDown({ 
+      level: 'road', 
+      provinceName: drillDown.provinceName, 
+      cityName: drillDown.cityName,
+      roadName: road.name,
+      districtName: road.district
+    })
+    setDetailModalVisible(true)
+  }, [drillDown.provinceName, drillDown.cityName])
+
+  // 路段明细表头
+  const roadColumns = [
+    {
+      title: '路段',
+      dataIndex: 'name',
+      key: 'name',
+      render: (text: string, record: RoadStats) => (
+        <a onClick={() => handleRoadClick(record)}>{text}</a>
+      )
+    },
+    { title: '所在区域', dataIndex: 'district', key: 'district' },
+    { 
+      title: '路灯总数', 
+      dataIndex: 'totalLamps', 
+      key: 'totalLamps', 
+      render: (v: number) => v.toLocaleString() 
+    },
+    {
+      title: '灯具类型分布',
+      key: 'typeBreakdown',
+      render: (_: any, record: RoadStats) => (
+        <Space size={4} wrap>
+          {Object.entries(record.lampTypeBreakdown)
+            .filter(([_, count]) => count > 0)
+            .map(([type, count]) => (
+              <Tag key={type}>{type}: {count}</Tag>
+            ))}
+        </Space>
+      )
+    },
+    {
+      title: '亮灯率',
+      dataIndex: 'lightRate',
+      key: 'lightRate',
+      render: (v: number) => (
+        <Tag color={v >= 97 ? 'green' : v >= 95 ? 'orange' : 'red'}>{v}%</Tag>
+      )
+    },
+    {
+      title: '故障率',
+      dataIndex: 'faultRate',
+      key: 'faultRate',
+      render: (v: number) => (
+        <span style={{ color: v > 3 ? '#ff4d4f' : '#666' }}>{v}%</span>
+      )
+    },
+    {
+      title: '近7天能耗',
+      dataIndex: 'energyConsumption',
+      key: 'energyConsumption',
+      render: (v: number) => `${(v / 1000).toFixed(1)}k kWh`
+    },
+    {
+      title: '节能率',
+      dataIndex: 'savingRate',
+      key: 'savingRate',
+      render: (v: number) => <span style={{ color: '#52c41a', fontWeight: 500 }}>{v}%</span>
+    }
+  ]
+
+  // 城市明细表头（下钻到省时显示）
+  const cityColumns = [
+    { title: '城市', dataIndex: 'name', key: 'name', render: (text: string, record: City) => <a onClick={() => handleCityClick(record, drillDown.provinceName!)}>{text}</a> },
+    { title: '路灯数', dataIndex: 'totalLamps', key: 'totalLamps', render: (v: number) => v.toLocaleString() },
+    {
+      title: '亮灯率',
+      dataIndex: 'lightRate',
+      key: 'lightRate',
+      render: (v: number) => <Tag color={v >= 97 ? 'green' : v >= 95 ? 'orange' : 'red'}>{v}%</Tag>
+    },
+    {
+      title: '节能率',
+      dataIndex: 'energySavingRate',
+      key: 'energySavingRate',
+      render: (v: number) => <span style={{ color: '#52c41a', fontWeight: 500 }}>{v}%</span>
+    },
+    {
+      title: '故障率',
+      dataIndex: 'faultRate',
+      key: 'faultRate',
+      render: (v: number) => <span style={{ color: v > 3 ? '#ff4d4f' : '#666' }}>{v}%</span>
+    },
+    { title: '平均响应时长', dataIndex: 'avgResponseTime', key: 'avgResponseTime', render: (v: number) => `${v}h` }
+  ]
+
+  // 城市明细表头（全国视图显示）
+  const nationalCityColumns = [
+    { title: '省份', dataIndex: 'provinceName', key: 'provinceName' },
+    ...cityColumns.filter(c => c.key !== 'name').map(c => 
+      c.key === 'name' ? c : { ...c, key: c.key }
+    ),
+    { ...cityColumns.find(c => c.key === 'name')!, dataIndex: 'name', key: 'cityName' }
+  ].filter((c, i, arr) => arr.findIndex(x => x.key === c.key) === i)
 
   const cityTableData = useMemo(() => {
+    if (drillDown.level === 'province' && drillDown.provinceName) {
+      const prov = scopeData.provinces.find(p => p.name === drillDown.provinceName)
+      return prov?.cities || []
+    }
     return filteredProvinces.flatMap(p =>
       p.cities.map(c => ({ ...c, provinceName: p.name }))
     ).sort((a, b) => b.energySavingRate - a.energySavingRate)
-  }, [filteredProvinces])
-
-  const levelText = currentUser?.level === 'national' ? '全国' :
-    currentUser?.level === 'provincial' ? currentUser.province :
-    currentUser?.level === 'municipal' ? currentUser.city : ''
+  }, [drillDown, scopeData.provinces, filteredProvinces])
 
   return (
     <div className="page-container">
+      {/* 导航栏 */}
       <Card style={{ marginBottom: 16 }}>
-        <Space wrap>
-          <span style={{ fontWeight: 500 }}>
-            当前范围：<Tag color="blue">{levelText}</Tag>
-          </span>
-          <span style={{ fontWeight: 500, marginLeft: 16 }}>路灯类型：</span>
-          <Select
-            value={selectedLampType}
-            onChange={(v) => setSelectedLampType(v as LampType | 'all')}
-            style={{ width: 140 }}
-            options={[
-              { value: 'all', label: '全部类型' },
-              { value: 'LED', label: 'LED' },
-              { value: '高压钠灯', label: '高压钠灯' },
-              { value: '金卤灯', label: '金卤灯' },
-              { value: '无极灯', label: '无极灯' }
-            ]}
-          />
-          {selectedLampType !== 'all' && (
-            <Tag color="orange">已按 {selectedLampType} 筛选，所有数据已同步更新</Tag>
+        <Space wrap size={16}>
+          <Space>
+            <span style={{ fontWeight: 500 }}>当前范围：</span>
+            {breadcrumbs.map((item, idx) => (
+              <span key={idx}>
+                {idx > 0 && <span style={{ color: '#999', margin: '0 4px' }}>/</span>}
+                {item.onClick ? (
+                  <a onClick={item.onClick} style={{ fontWeight: idx === breadcrumbs.length - 1 ? 600 : 400 }}>
+                    {item.label}
+                  </a>
+                ) : (
+                  <span style={{ fontWeight: 600, color: '#1677ff' }}>{item.label}</span>
+                )}
+              </span>
+            ))}
+          </Space>
+
+          {drillDown.level !== 'national' && (
+            <Button 
+              icon={<HomeOutlined />} 
+              size="small"
+              onClick={() => {
+                if (currentUser?.level === 'provincial') {
+                  setDrillDown({ level: 'province', provinceName: currentUser.province })
+                } else if (currentUser?.level === 'municipal') {
+                  setDrillDown({ level: 'city', provinceName: currentUser.province, cityName: currentUser.city })
+                } else {
+                  setDrillDown({ level: 'national' })
+                }
+              }}
+            >
+              返回总览
+            </Button>
           )}
+
+          <Space style={{ marginLeft: 'auto' }}>
+            <span style={{ fontWeight: 500 }}>路灯类型：</span>
+            <Select
+              value={selectedLampType}
+              onChange={(v) => setSelectedLampType(v as LampType | 'all')}
+              style={{ width: 140 }}
+              options={[
+                { value: 'all', label: '全部类型' },
+                { value: 'LED', label: 'LED' },
+                { value: '高压钠灯', label: '高压钠灯' },
+                { value: '金卤灯', label: '金卤灯' },
+                { value: '无极灯', label: '无极灯' }
+              ]}
+            />
+            {selectedLampType !== 'all' && (
+              <Tag color="orange">已按 {selectedLampType} 筛选</Tag>
+            )}
+          </Space>
         </Space>
       </Card>
 
+      {/* KPI 卡片 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} md={6}>
           <div className="stat-card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <div className="stat-label">路灯总数</div>
-                <div className="stat-value">{(stats.totalLamps / 10000).toFixed(1)}万</div>
+                <div className="stat-label">{selectedLampType !== 'all' ? `${selectedLampType}数量` : '路灯总数'}</div>
+                <div className="stat-value">{(scopeStats.totalLamps / 10000).toFixed(2)}万</div>
                 <div className="stat-trend">
-                  <ArrowUpOutlined /> {levelText}范围
+                  <ArrowUpOutlined /> {scopeData.scopeName}范围
                 </div>
               </div>
               <BulbOutlined style={{ fontSize: 40, opacity: 0.4 }} />
@@ -366,10 +858,10 @@ export default function Dashboard() {
           <div className="stat-card green">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <div className="stat-label">平均亮灯率</div>
-                <div className="stat-value">{stats.avgLightRate}%</div>
+                <div className="stat-label">{selectedLampType !== 'all' ? `${selectedLampType}亮灯率` : '平均亮灯率'}</div>
+                <div className="stat-value">{scopeStats.avgLightRate}%</div>
                 <div className="stat-trend">
-                  <RiseOutlined /> {selectedLampType !== 'all' ? `按${selectedLampType}统计` : '较上月 0.8%'}
+                  <RiseOutlined /> {selectedLampType !== 'all' ? `仅${selectedLampType}` : '较上月 0.8%'}
                 </div>
               </div>
               <BulbOutlined style={{ fontSize: 40, opacity: 0.4 }} />
@@ -381,7 +873,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
                 <div className="stat-label">平均节能率</div>
-                <div className="stat-value">{stats.avgSavingRate}%</div>
+                <div className="stat-value">{scopeStats.avgSavingRate}%</div>
                 <div className="stat-trend">
                   <ArrowUpOutlined /> 目标 30%
                 </div>
@@ -394,8 +886,8 @@ export default function Dashboard() {
           <div className="stat-card blue">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <div className="stat-label">平均故障率</div>
-                <div className="stat-value">{stats.avgFaultRate}%</div>
+                <div className="stat-label">{selectedLampType !== 'all' ? `${selectedLampType}故障率` : '平均故障率'}</div>
+                <div className="stat-value">{scopeStats.avgFaultRate}%</div>
                 <div className="stat-trend">
                   <FallOutlined /> 较上月下降
                 </div>
@@ -406,27 +898,37 @@ export default function Dashboard() {
         </Col>
       </Row>
 
-      <Card
-        title={`${levelText}照明节能热力图（颜色越深节能率越高）`}
-        className="chart-card"
-        style={{ marginBottom: 16 }}
-        extra={<Tooltip title="点击省份查看该省详情">💡 点击省份可下钻</Tooltip>}
-      >
-        <ReactECharts
-          option={heatmapOption}
-          style={{ height: 280 }}
-          onEvents={{ click: handleHeatmapClick }}
-        />
-      </Card>
+      {/* 热力图 - 仅全国和省级显示 */}
+      {(drillDown.level === 'national' || (drillDown.level === 'province' && provinceStats.length > 1)) && (
+        <Card
+          title={`${scopeData.scopeName}照明节能热力图（颜色越深节能率越高）`}
+          className="chart-card"
+          style={{ marginBottom: 16 }}
+          extra={<Tooltip title="点击省份查看该省详情">💡 点击省份可下钻</Tooltip>}
+        >
+          <ReactECharts
+            option={heatmapOption}
+            style={{ height: 280 }}
+            onEvents={{ click: handleHeatmapClick }}
+          />
+        </Card>
+      )}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} lg={16}>
-          <Card title={`${levelText}各省份照明节能指标对比`} className="chart-card">
+          <Card 
+            title={`${scopeData.scopeName}${drillDown.level === 'city' || drillDown.level === 'road' ? '各路段' : '各省份'}照明节能指标对比`} 
+            className="chart-card"
+          >
             <ReactECharts option={barChartOption} style={{ height: 360 }} />
           </Card>
         </Col>
         <Col xs={24} lg={8}>
-          <Card title={`故障率TOP10城市（${levelText}）`} className="chart-card">
+          <Card 
+            title={`故障率TOP10（${scopeData.scopeName}）`} 
+            className="chart-card"
+            extra={drillDown.level === 'city' ? <Tag color="blue">按路段排名</Tag> : <Tag color="blue">按城市排名</Tag>}
+          >
             <ReactECharts option={rankingOption} style={{ height: 360 }} />
           </Card>
         </Col>
@@ -434,73 +936,76 @@ export default function Dashboard() {
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} lg={16}>
-          <Card title={`${levelText}近30天能耗趋势`} className="chart-card">
+          <Card title={`${scopeData.scopeName}近30天能耗趋势`} className="chart-card">
             <ReactECharts option={energyTrendOption} style={{ height: 320 }} />
           </Card>
         </Col>
         <Col xs={24} lg={8}>
-          <Card title="路灯类型分布" className="chart-card">
+          <Card 
+            title={selectedLampType !== 'all' ? `${selectedLampType}占比` : '路灯类型分布'} 
+            className="chart-card"
+          >
             <ReactECharts option={pieOption} style={{ height: 320 }} />
           </Card>
         </Col>
       </Row>
 
+      {/* 路段级明细 - 城市或路段视图显示 */}
+      {(drillDown.level === 'city' || drillDown.level === 'road') && (
+        <Card 
+          title={`${scopeData.scopeName}路段级明细`} 
+          className="chart-card" 
+          style={{ marginBottom: 16 }}
+          extra={<span style={{ color: '#999', fontSize: 12 }}>点击路段可查看详情</span>}
+        >
+          <Table
+            dataSource={roadStats}
+            columns={roadColumns}
+            rowKey="name"
+            size="small"
+            pagination={{ pageSize: 8, showSizeChanger: true, showTotal: t => `共 ${t} 条路段` }}
+            scroll={{ x: 1200 }}
+          />
+        </Card>
+      )}
+
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={16}>
           <Card
-            title={`${levelText}城市明细数据`}
+            title={`${scopeData.scopeName}${drillDown.level === 'province' ? '城市' : drillDown.level === 'city' ? '路段' : '城市'}明细数据`}
             className="chart-card"
-            extra={<span style={{ color: '#999', fontSize: 12 }}>点击城市可下钻查看详情</span>}
+            extra={<span style={{ color: '#999', fontSize: 12 }}>
+              {drillDown.level === 'national' && '点击城市可下钻'}
+              {drillDown.level === 'province' && '点击城市可下钻到路段'}
+              {drillDown.level === 'city' && '点击路段可查看详情'}
+            </span>}
           >
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ background: '#fafafa' }}>
-                    {currentUser?.level === 'national' && (
-                      <th style={{ padding: '10px 12px', textAlign: 'left', borderBottom: '1px solid #f0f0f0' }}>省份</th>
-                    )}
-                    <th style={{ padding: '10px 12px', textAlign: 'left', borderBottom: '1px solid #f0f0f0' }}>城市</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>路灯数</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>亮灯率</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>节能率</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>故障率</th>
-                    <th style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>响应时长</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cityTableData.map((city, idx) => (
-                    <tr
-                      key={idx}
-                      style={{ cursor: 'pointer', transition: 'background 0.2s' }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = '#f5f5f5'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = '#fff'}
-                      onClick={() => handleCityClick(city as any, city.provinceName)}
-                    >
-                      {currentUser?.level === 'national' && (
-                        <td style={{ padding: '10px 12px', borderBottom: '1px solid #f0f0f0' }}>{city.provinceName}</td>
-                      )}
-                      <td style={{ padding: '10px 12px', borderBottom: '1px solid #f0f0f0' }}>
-                        <a>{city.name}</a>
-                      </td>
-                      <td style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{city.totalLamps.toLocaleString()}</td>
-                      <td style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                        <Tag color={city.lightRate >= 97 ? 'green' : city.lightRate >= 95 ? 'orange' : 'red'}>
-                          {city.lightRate}%
-                        </Tag>
-                      </td>
-                      <td style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                        <span style={{ color: '#52c41a', fontWeight: 500 }}>{city.energySavingRate}%</span>
-                      </td>
-                      <td style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                        <span style={{ color: city.faultRate > 3 ? '#ff4d4f' : '#666' }}>{city.faultRate}%</span>
-                      </td>
-                      <td style={{ padding: '10px 12px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                        {city.avgResponseTime}h
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {drillDown.level === 'province' ? (
+                <Table
+                  dataSource={cityTableData as any}
+                  columns={cityColumns}
+                  rowKey="code"
+                  size="small"
+                  pagination={{ pageSize: 10 }}
+                />
+              ) : (
+                <Table
+                  dataSource={cityTableData as any}
+                  columns={[
+                    { title: '省份', dataIndex: 'provinceName', key: 'provinceName' },
+                    { title: '城市', dataIndex: 'name', key: 'name', render: (text: string, record: any) => <a onClick={() => handleCityClick(record, record.provinceName)}>{text}</a> },
+                    { title: '路灯数', dataIndex: 'totalLamps', key: 'totalLamps', render: (v: number) => v.toLocaleString() },
+                    { title: '亮灯率', dataIndex: 'lightRate', key: 'lightRate', render: (v: number) => <Tag color={v >= 97 ? 'green' : v >= 95 ? 'orange' : 'red'}>{v}%</Tag> },
+                    { title: '节能率', dataIndex: 'energySavingRate', key: 'energySavingRate', render: (v: number) => <span style={{ color: '#52c41a', fontWeight: 500 }}>{v}%</span> },
+                    { title: '故障率', dataIndex: 'faultRate', key: 'faultRate', render: (v: number) => <span style={{ color: v > 3 ? '#ff4d4f' : '#666' }}>{v}%</span> },
+                    { title: '响应时长', dataIndex: 'avgResponseTime', key: 'avgResponseTime', render: (v: number) => `${v}h` }
+                  ]}
+                  rowKey="code"
+                  size="small"
+                  pagination={{ pageSize: 10 }}
+                />
+              )}
             </div>
           </Card>
         </Col>
@@ -511,89 +1016,68 @@ export default function Dashboard() {
         </Col>
       </Row>
 
+      {/* 路段详情弹窗 */}
       <Modal
-        title={
-          selectedDrillDown?.type === 'province'
-            ? `${selectedDrillDown.data.name} - 全省详情`
-            : `${selectedDrillDown?.provinceName} - ${(selectedDrillDown?.data as City)?.name} - 城市详情`
-        }
-        open={modalVisible}
-        onCancel={() => setModalVisible(false)}
+        title={`${drillDown.provinceName} - ${drillDown.cityName} - ${drillDown.roadName} - 路段详情`}
+        open={detailModalVisible}
+        onCancel={() => setDetailModalVisible(false)}
         footer={null}
-        width={900}
+        width={1000}
       >
-        {selectedDrillDown && (
-          <Tabs defaultActiveKey="energy">
-            <Tabs.TabPane tab="近7天能耗趋势" key="energy">
-              <ReactECharts option={roadEnergyOption} style={{ height: 320 }} />
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="故障类型分布" key="fault">
-              <ReactECharts option={faultPieOption} style={{ height: 320 }} />
-            </Tabs.TabPane>
-            <Tabs.TabPane tab="各路段/城市明细" key="detail">
-              {selectedDrillDown.type === 'province' ? (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ background: '#fafafa' }}>
-                        <th style={{ padding: '8px', textAlign: 'left', borderBottom: '1px solid #f0f0f0' }}>城市</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>路灯数</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>亮灯率</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>节能率</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>故障率</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(selectedDrillDown.data as Province).cities.map((city, i) => (
-                        <tr
-                          key={i}
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => handleCityClick(city, selectedDrillDown.data.name)}
-                        >
-                          <td style={{ padding: '8px', borderBottom: '1px solid #f0f0f0' }}><a>{city.name}</a></td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{city.totalLamps.toLocaleString()}</td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{city.lightRate}%</td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{city.energySavingRate}%</td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{city.faultRate}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ background: '#fafafa' }}>
-                        <th style={{ padding: '8px', textAlign: 'left', borderBottom: '1px solid #f0f0f0' }}>路段</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>路灯数</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>亮灯率</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>今日能耗(kWh)</th>
-                        <th style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>节能率</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {['中山路1段', '人民路2段', '建设路3段', '解放路4段', '文化路5段', '科技路6段', '滨江路7段', '和平路8段'].map((road, idx) => (
-                        <tr key={idx}>
-                          <td style={{ padding: '8px', borderBottom: '1px solid #f0f0f0' }}>{road}</td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{Math.floor(Math.random() * 200 + 50)}</td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                            {(Math.random() * 6 + 93).toFixed(1)}%
-                          </td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                            {Math.floor(Math.random() * 2000 + 1000).toLocaleString()}
-                          </td>
-                          <td style={{ padding: '8px', textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>
-                            <span style={{ color: '#52c41a' }}>{(Math.random() * 15 + 20).toFixed(1)}%</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Tabs.TabPane>
-          </Tabs>
+        {drillDown.roadName && roadStats.find(r => r.name === drillDown.roadName) && (
+          <>
+            <Descriptions column={3} bordered size="small" style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="路段名称">{drillDown.roadName}</Descriptions.Item>
+              <Descriptions.Item label="所属区域">{drillDown.districtName}</Descriptions.Item>
+              <Descriptions.Item label="路灯总数">{roadStats.find(r => r.name === drillDown.roadName)!.totalLamps}盏</Descriptions.Item>
+              <Descriptions.Item label="亮灯率">
+                <Tag color={roadStats.find(r => r.name === drillDown.roadName)!.lightRate >= 97 ? 'green' : 'orange'}>
+                  {roadStats.find(r => r.name === drillDown.roadName)!.lightRate}%
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="故障率">
+                <Tag color={roadStats.find(r => r.name === drillDown.roadName)!.faultRate > 3 ? 'red' : 'blue'}>
+                  {roadStats.find(r => r.name === drillDown.roadName)!.faultRate}%
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="节能率">
+                <span style={{ color: '#52c41a', fontWeight: 500 }}>
+                  {roadStats.find(r => r.name === drillDown.roadName)!.savingRate}%
+                </span>
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Tabs defaultActiveKey="energy">
+              <Tabs.TabPane tab="近7天能耗趋势" key="energy">
+                <ReactECharts option={roadEnergyOption} style={{ height: 320 }} />
+              </Tabs.TabPane>
+              <Tabs.TabPane tab="灯具类型分布" key="lampType">
+                <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                  {Object.entries(roadStats.find(r => r.name === drillDown.roadName)!.lampTypeBreakdown)
+                    .filter(([_, count]) => count > 0)
+                    .map(([type, count], idx) => {
+                      const total = roadStats.find(r => r.name === drillDown.roadName)!.totalLamps
+                      const percent = total > 0 ? (count / total) * 100 : 0
+                      return (
+                        <Col xs={12} md={6} key={type}>
+                          <Card style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 24, fontWeight: 700, color: ['#1677ff', '#52c41a', '#faad14', '#722ed1'][idx] }}>
+                              {count}
+                            </div>
+                            <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>{type}</div>
+                            <Progress percent={Number(percent.toFixed(1))} showInfo={false} style={{ marginTop: 8 }} />
+                            <div style={{ fontSize: 11, color: '#999' }}>{percent.toFixed(1)}%</div>
+                          </Card>
+                        </Col>
+                      )
+                    })}
+                </Row>
+              </Tabs.TabPane>
+              <Tabs.TabPane tab="故障类型分布" key="fault">
+                <ReactECharts option={faultPieOption} style={{ height: 320 }} />
+              </Tabs.TabPane>
+            </Tabs>
+          </>
         )}
       </Modal>
     </div>

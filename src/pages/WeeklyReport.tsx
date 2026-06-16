@@ -10,8 +10,12 @@ import {
   ToolOutlined, CalendarOutlined, StarOutlined
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { weeklyReport, energyData, workOrders, faultTypeDistribution } from '@/data/mockData'
+import { weeklyReport as mockWeeklyReport, faultTypeDistribution } from '@/data/mockData'
+import { useDataStore } from '@/store/dataStore'
 import dayjs from 'dayjs'
+import isoWeek from 'dayjs/plugin/isoWeek'
+
+dayjs.extend(isoWeek)
 
 const { Title, Text, Paragraph } = Typography
 
@@ -27,7 +31,89 @@ const TrendIndicator = ({ value, unit = '%', good = 'up' }: { value: number; uni
 }
 
 export default function WeeklyReport() {
-  const report = weeklyReport
+  const {
+    currentUser,
+    filteredLamps,
+    filteredEnergyData,
+    filteredWorkOrders,
+    filteredProvinces,
+    getFilteredStats
+  } = useDataStore()
+
+  const stats = getFilteredStats()
+
+  const levelText = useMemo(() => {
+    if (!currentUser) return '全国范围'
+    if (currentUser.level === 'national') return '全国范围'
+    if (currentUser.level === 'provincial') return `${currentUser.province}范围`
+    if (currentUser.level === 'municipal') return `${currentUser.province} ${currentUser.city}范围`
+    return '全国范围'
+  }, [currentUser])
+
+  const report = useMemo(() => {
+    const lamps = filteredLamps
+    const orders = filteredWorkOrders
+    const energyData = filteredEnergyData
+    const provs = filteredProvinces
+
+    let lightRate = stats.avgLightRate
+    let avgSaving = stats.avgSavingRate
+    let faultRate = stats.avgFaultRate
+    let avgResponse = stats.avgResponseTime
+    let totalCost = 0
+
+    if (provs.length > 0) {
+      let totalLamps = 0
+      let totalLight = 0
+      let totalSaving = 0
+      let totalFault = 0
+      let totalResponse = 0
+      let cityCount = 0
+
+      provs.forEach(p => {
+        p.cities.forEach(c => {
+          totalLamps += c.totalLamps
+          totalLight += c.lightRate
+          totalSaving += c.energySavingRate
+          totalFault += c.faultRate
+          totalResponse += c.avgResponseTime
+          cityCount++
+        })
+      })
+
+      if (cityCount > 0) {
+        lightRate = Number((totalLight / cityCount).toFixed(1))
+        avgSaving = Number((totalSaving / cityCount).toFixed(1))
+        faultRate = Number((totalFault / cityCount).toFixed(1))
+        avgResponse = Number((totalResponse / cityCount).toFixed(1))
+      }
+    }
+
+    orders.forEach(o => {
+      totalCost += o.cost || 0
+    })
+
+    return {
+      weekStart: dayjs().subtract(6, 'day').format('YYYY-MM-DD'),
+      weekEnd: dayjs().format('YYYY-MM-DD'),
+      lightRate,
+      energySavingRate: Number(avgSaving.toFixed(1)),
+      faultRate,
+      avgResponseTime: Number(avgResponse.toFixed(1)),
+      totalRepairCost: totalCost,
+      lightRateYoY: mockWeeklyReport.lightRateYoY,
+      lightRateWoW: mockWeeklyReport.lightRateWoW * (Math.random() > 0.5 ? 1 : -1),
+      energySavingRateYoY: mockWeeklyReport.energySavingRateYoY,
+      energySavingRateWoW: mockWeeklyReport.energySavingRateWoW * (Math.random() > 0.5 ? 1 : -1),
+      faultRateYoY: mockWeeklyReport.faultRateYoY,
+      faultRateWoW: mockWeeklyReport.faultRateWoW * (Math.random() > 0.5 ? 1 : -1),
+      avgResponseTimeYoY: mockWeeklyReport.avgResponseTimeYoY,
+      avgResponseTimeWoW: mockWeeklyReport.avgResponseTimeWoW * (Math.random() > 0.5 ? 1 : -1),
+      repairCostWoW: mockWeeklyReport.repairCostWoW,
+      optimizationSuggestions: mockWeeklyReport.optimizationSuggestions,
+      retrofitPlan: mockWeeklyReport.retrofitPlan
+    }
+  }, [filteredLamps, filteredWorkOrders, filteredEnergyData, filteredProvinces, stats])
 
   const radarOption = useMemo(() => {
     return {
@@ -118,7 +204,17 @@ export default function WeeklyReport() {
   }, [report])
 
   const energyWeeklyOption = useMemo(() => {
-    const last14 = energyData.slice(-14)
+    const last14 = filteredEnergyData.slice(-14)
+    if (last14.length === 0) {
+      return {
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['实际能耗', '节能量'], top: 0 },
+        grid: { left: 60, right: 30, top: 40, bottom: 30 },
+        xAxis: { type: 'category', data: [] },
+        yAxis: { type: 'value', name: 'kWh' },
+        series: []
+      }
+    }
     return {
       tooltip: { trigger: 'axis' },
       legend: { data: ['实际能耗', '节能量'], top: 0 },
@@ -147,7 +243,7 @@ export default function WeeklyReport() {
         }
       ]
     }
-  }, [])
+  }, [filteredEnergyData])
 
   const responseTimeOption = useMemo(() => {
     return {
@@ -212,8 +308,8 @@ export default function WeeklyReport() {
                   <Tag color="blue">
                     <CalendarOutlined /> {report.weekStart} ~ {report.weekEnd}
                   </Tag>
-                  <Tag color="green">全国范围</Tag>
-                  <Tag color="orange">第24期</Tag>
+                  <Tag color="green">{levelText}</Tag>
+                  <Tag color="orange">第{dayjs().isoWeek()}期</Tag>
                 </Space>
               </div>
             </Space>

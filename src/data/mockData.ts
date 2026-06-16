@@ -24,6 +24,33 @@ const random = (min: number, max: number, decimals = 2) => {
   return Number((Math.random() * (max - min) + min).toFixed(decimals))
 }
 
+const getRandomProvinceCity = (): { province: string; city: string; district: string; road: string } => {
+  const provinceIdx = Math.floor(Math.random() * provinceNames.length)
+  const province = provinceNames[provinceIdx]
+  const cities = cityMap[province]
+  const city = cities[Math.floor(Math.random() * cities.length)]
+  const districts = ['第一区', '第二区', '第三区', '中心区', '开发区', '高新区']
+  const roads = ['中山路', '人民路', '建设路', '解放路', '文化路', '科技路', '滨江路', '和平路']
+  return {
+    province,
+    city,
+    district: districts[Math.floor(Math.random() * districts.length)],
+    road: roads[Math.floor(Math.random() * roads.length)] + (Math.floor(Math.random() * 5) + 1) + '段'
+  }
+}
+
+const getRandomCityByProvince = (province: string): { city: string; district: string; road: string } => {
+  const cities = cityMap[province]
+  const city = cities[Math.floor(Math.random() * cities.length)]
+  const districts = ['第一区', '第二区', '第三区', '中心区', '开发区', '高新区']
+  const roads = ['中山路', '人民路', '建设路', '解放路', '文化路', '科技路', '滨江路', '和平路']
+  return {
+    city,
+    district: districts[Math.floor(Math.random() * districts.length)],
+    road: roads[Math.floor(Math.random() * roads.length)] + (Math.floor(Math.random() * 5) + 1) + '段'
+  }
+}
+
 export const generateProvinces = (): Province[] => {
   return provinceNames.map((name, idx) => {
     const cities = cityMap[name].map((cityName, cIdx) => ({
@@ -52,19 +79,18 @@ const faultTypes = ['光源损坏', '电源故障', '控制板故障', '线路�
 
 export const generateLamps = (count = 500): StreetLamp[] => {
   const lamps: StreetLamp[] = []
-  const roads = ['中山路', '人民路', '建设路', '解放路', '文化路', '科技路', '滨江路', '和平路', '光明路', '迎宾路']
-  const districts = ['南山区', '福田区', '罗湖区', '宝安区', '龙岗区', '龙华区']
   
   for (let i = 0; i < count; i++) {
     const status = statuses[Math.floor(Math.random() * statuses.length)]
     const type = lampTypes[Math.floor(Math.random() * lampTypes.length)]
+    const location = getRandomProvinceCity()
     lamps.push({
       id: `LAMP${String(i + 1).padStart(6, '0')}`,
       code: `LD${String(i + 1).padStart(6, '0')}`,
-      province: '广东省',
-      city: '深圳市',
-      district: districts[i % districts.length],
-      road: roads[i % roads.length] + (Math.floor(i / 10) + 1) + '段',
+      province: location.province,
+      city: location.city,
+      district: location.district,
+      road: location.road,
       type,
       power: type === 'LED' ? random(30, 150, 0) : type === '高压钠灯' ? random(100, 400, 0) : random(70, 250, 0),
       status,
@@ -77,40 +103,45 @@ export const generateLamps = (count = 500): StreetLamp[] => {
   return lamps
 }
 
-export const streetLamps = generateLamps(500)
+export const streetLamps = generateLamps(800)
 
-export const generateEnergyData = (days = 90, city = '深圳市', province = '广东省'): EnergyConsumption[] => {
+export const generateEnergyData = (): EnergyConsumption[] => {
   const data: EnergyConsumption[] = []
-  for (let i = days - 1; i >= 0; i--) {
-    const date = dayjs().subtract(i, 'day').format('YYYY-MM-DD')
-    const baseline = random(80000, 120000, 0)
-    const savingRate = random(20, 35)
-    const actual = baseline * (1 - savingRate / 100)
-    data.push({
-      date,
-      province,
-      city,
-      actualConsumption: Number(actual.toFixed(0)),
-      baselineConsumption: baseline,
-      savingAmount: Number((baseline - actual).toFixed(0)),
-      savingRate,
-      peakConsumption: Number((actual * 0.6).toFixed(0)),
-      valleyConsumption: Number((actual * 0.4).toFixed(0))
+  // 每个省份选3个代表城市，每个城市生成90天数据
+  provinceNames.forEach((provinceName) => {
+    const cities = cityMap[provinceName]
+    // 取前3个城市
+    cities.slice(0, 3).forEach((cityName) => {
+      for (let i = 89; i >= 0; i--) {
+        const date = dayjs().subtract(i, 'day').format('YYYY-MM-DD')
+        const baseline = random(50000, 150000, 0)
+        const savingRate = random(15, 40)
+        const actual = baseline * (1 - savingRate / 100)
+        data.push({
+          date,
+          province: provinceName,
+          city: cityName,
+          actualConsumption: Number(actual.toFixed(0)),
+          baselineConsumption: baseline,
+          savingAmount: Number((baseline - actual).toFixed(0)),
+          savingRate,
+          peakConsumption: Number((actual * 0.6).toFixed(0)),
+          valleyConsumption: Number((actual * 0.4).toFixed(0))
+        })
+      }
     })
-  }
+  })
   return data
 }
 
-export const energyData = generateEnergyData(90)
+export const energyData = generateEnergyData()
 
 const workOrderTypes: WorkOrder['type'][] = ['fault', 'inspection', 'emergency', 'adjustment']
 const priorities: WorkOrder['priority'][] = ['low', 'medium', 'high', 'urgent']
 const orderStatuses: WorkOrder['status'][] = ['pending', 'processing', 'approved1', 'approved2', 'completed', 'rejected']
 
-export const generateWorkOrders = (count = 100): WorkOrder[] => {
+export const generateWorkOrders = (count = 120): WorkOrder[] => {
   const orders: WorkOrder[] = []
-  const roads = ['中山路1段', '人民路2段', '建设路3段', '解放路4段', '文化路5段', '科技路6段', '滨江路7段', '和平路8段']
-  const districts = ['南山区', '福田区', '罗湖区', '宝安区', '龙岗区']
   const titles = {
     fault: ['路灯不亮维修', '路灯闪烁检修', '路灯漏电处理', '灯杆倾斜修复'],
     inspection: ['常规巡检任务', '季度专项巡检', '节前安全巡检', '雨天特巡'],
@@ -122,17 +153,18 @@ export const generateWorkOrders = (count = 100): WorkOrder[] => {
     const type = workOrderTypes[i % 4]
     const titleList = titles[type]
     const status = orderStatuses[Math.floor(Math.random() * orderStatuses.length)]
+    const location = getRandomProvinceCity()
     orders.push({
       id: `WO${String(i + 1).padStart(6, '0')}`,
       orderNo: `GZ${dayjs().format('YYYYMMDD')}${String(i + 1).padStart(4, '0')}`,
       type,
       title: titleList[Math.floor(Math.random() * titleList.length)],
       description: '工单详细描述内容，包含具体的问题说明和处理要求。',
-      province: '广东省',
-      city: '深圳市',
-      district: districts[i % districts.length],
-      road: roads[i % roads.length],
-      lampId: type === 'fault' ? `LAMP${String(Math.floor(Math.random() * 500) + 1).padStart(6, '0')}` : undefined,
+      province: location.province,
+      city: location.city,
+      district: location.district,
+      road: location.road,
+      lampId: type === 'fault' ? `LAMP${String(Math.floor(Math.random() * 800) + 1).padStart(6, '0')}` : undefined,
       status,
       priority: priorities[Math.floor(Math.random() * priorities.length)],
       createTime: dayjs().subtract(random(0, 720, 0), 'hour').format('YYYY-MM-DD HH:mm:ss'),
@@ -141,13 +173,24 @@ export const generateWorkOrders = (count = 100): WorkOrder[] => {
       cost: status === 'completed' ? random(50, 5000, 0) : undefined,
       reporter: ['系统自动', '张工', '李工', '王工'][i % 4],
       assignee: ['运维一组', '运维二组', '运维三组', '运维四组'][i % 4],
-      approvalLog: (status !== 'pending' && status !== 'processing' ? [
-        { level: 1, approver: '陈组长', action: 'approve' as const, comment: '情况属实，同意处理', time: dayjs().subtract(random(1, 72, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') }
-      ] : []).concat((status === 'approved2' || status === 'completed') ? [
-        { level: 2, approver: '刘主任', action: 'approve' as const, comment: '同意，按方案执行', time: dayjs().subtract(random(1, 48, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') }
-      ] : []).concat(status === 'completed' ? [
-        { level: 3, approver: '王局长', action: 'approve' as const, comment: '批准归档', time: dayjs().subtract(random(1, 24, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') }
-      ] : [])
+      approvalLog: (() => {
+        const logs: { level: number; approver: string; action: 'approve' | 'reject'; comment: string; time: string }[] = []
+        if (status !== 'pending' && status !== 'processing') {
+          logs.push({ level: 1, approver: '陈组长', action: 'approve', comment: '情况属实，同意处理', time: dayjs().subtract(random(1, 72, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') })
+        }
+        if (status === 'approved2' || status === 'completed') {
+          logs.push({ level: 2, approver: '刘主任', action: 'approve', comment: '同意，按方案执行', time: dayjs().subtract(random(1, 48, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') })
+        }
+        if (status === 'completed') {
+          logs.push({ level: 3, approver: '王局长', action: 'approve', comment: '批准归档', time: dayjs().subtract(random(1, 24, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') })
+        }
+        if (status === 'rejected') {
+          const rejectLevel = Math.floor(Math.random() * 3) + 1
+          const approvers = ['陈组长', '刘主任', '王局长']
+          logs.push({ level: rejectLevel, approver: approvers[rejectLevel - 1], action: 'reject', comment: '信息不完整，请补充后重新提交', time: dayjs().subtract(random(1, 72, 0), 'hour').format('YYYY-MM-DD HH:mm:ss') })
+        }
+        return logs
+      })()
     })
   }
   return orders
@@ -157,10 +200,8 @@ export const workOrders = generateWorkOrders(100)
 
 const alertTypes = ['light_rate', 'fault_timeout', 'energy_abnormal', 'offline'] as const
 
-export const generateAlerts = (count = 50): Alert[] => {
+export const generateAlerts = (count = 60): Alert[] => {
   const alerts: Alert[] = []
-  const roads = ['中山路1段', '人民路2段', '建设路3段', '解放路4段', '文化路5段']
-  const districts = ['南山区', '福田区', '罗湖区', '宝安区']
   const titlesMap: Record<string, string[]> = {
     light_rate: ['路段亮灯率持续偏低预警', '连续多日亮灯率不达标'],
     fault_timeout: ['单灯故障超时未修复', '故障超过24小时未处理'],
@@ -172,6 +213,7 @@ export const generateAlerts = (count = 50): Alert[] => {
     const type = alertTypes[i % 4]
     const level: Alert['level'] = type === 'light_rate' || type === 'fault_timeout' ? 1 : type === 'energy_abnormal' ? 2 : 3
     const titleList = titlesMap[type]
+    const location = getRandomProvinceCity()
     alerts.push({
       id: `ALT${String(i + 1).padStart(6, '0')}`,
       type,
@@ -184,18 +226,18 @@ export const generateAlerts = (count = 50): Alert[] => {
         : type === 'energy_abnormal'
         ? `该路段今日能耗较基准值高出${random(10, 40)}%，请检查是否存在异常。`
         : `检测到${random(3, 20, 0)}盏路灯控制器离线，请排查网络或设备故障。`,
-      province: '广东省',
-      city: '深圳市',
-      district: districts[i % districts.length],
-      road: roads[i % roads.length],
-      lampId: type === 'fault_timeout' ? `LAMP${String(Math.floor(Math.random() * 500) + 1).padStart(6, '0')}` : undefined,
+      province: location.province,
+      city: location.city,
+      district: location.district,
+      road: location.road,
+      lampId: type === 'fault_timeout' ? `LAMP${String(Math.floor(Math.random() * 800) + 1).padStart(6, '0')}` : undefined,
       value: type === 'light_rate' ? random(85, 94) : type === 'energy_abnormal' ? random(110, 150) : undefined,
       threshold: type === 'light_rate' ? 95 : type === 'energy_abnormal' ? 100 : undefined,
       createTime: dayjs().subtract(random(0.5, 48, 1), 'hour').format('YYYY-MM-DD HH:mm:ss'),
       isHandled: Math.random() > 0.5,
       handledTime: Math.random() > 0.5 ? dayjs().subtract(random(0.1, 24, 1), 'hour').format('YYYY-MM-DD HH:mm:ss') : undefined,
       handler: Math.random() > 0.5 ? ['陈组长', '刘工', '张工'][Math.floor(Math.random() * 3)] : undefined,
-      workOrderId: Math.random() > 0.5 ? `WO${String(Math.floor(Math.random() * 100) + 1).padStart(6, '0')}` : undefined
+      workOrderId: Math.random() > 0.5 ? `WO${String(Math.floor(Math.random() * 120) + 1).padStart(6, '0')}` : undefined
     })
   }
   return alerts
@@ -241,16 +283,16 @@ export const weeklyReport = generateWeeklyReport()
 export const generateInspectionBatches = (): InspectionBatch[] => {
   const batches: InspectionBatch[] = []
   const roads = ['中山路', '人民路', '建设路', '解放路', '文化路', '科技路']
-  const districts = ['南山区', '福田区', '罗湖区', '宝安区']
   const statuses: InspectionBatch['status'][] = ['pending', 'in_progress', 'completed']
   
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 24; i++) {
+    const location = getRandomProvinceCity()
     batches.push({
       id: `IB${String(i + 1).padStart(6, '0')}`,
       batchNo: `XJ${dayjs().format('YYYYMMDD')}${String(i + 1).padStart(3, '0')}`,
-      province: '广东省',
-      city: '深圳市',
-      district: districts[i % districts.length],
+      province: location.province,
+      city: location.city,
+      district: location.district,
       roads: [roads[i % roads.length] + '1段', roads[i % roads.length] + '2段'],
       lampCount: random(50, 300, 0),
       scheduleDate: dayjs().add(random(-3, 7, 0), 'day').format('YYYY-MM-DD'),
@@ -271,18 +313,23 @@ const defaultDimmingSchedule: DimmingSchedule[] = [
 ]
 
 export const generateEnergyPlans = (): EnergyPlan[] => {
-  return [
-    {
-      id: 'EP2026001',
+  const plans: EnergyPlan[] = []
+  // 每个省份1份代表城市的节能计划
+  provinceNames.forEach((provinceName, idx) => {
+    const cities = cityMap[provinceName]
+    const cityName = cities[0]
+    plans.push({
+      id: `EP${String(idx + 1).padStart(6, '0')}`,
       year: 2026,
-      province: '广东省',
-      city: '深圳市',
-      uploadTime: '2026-01-15 10:30:00',
+      province: provinceName,
+      city: cityName,
+      uploadTime: dayjs().subtract(random(0, 30, 0), 'day').format('YYYY-MM-DD HH:mm:ss'),
       dimmingSchedule: defaultDimmingSchedule,
-      targetSavingRate: 30,
-      predictedConsumption: 28500000
-    }
-  ]
+      targetSavingRate: random(25, 35, 1),
+      predictedConsumption: random(20000000, 40000000, 0)
+    })
+  })
+  return plans
 }
 
 export const energyPlans = generateEnergyPlans()

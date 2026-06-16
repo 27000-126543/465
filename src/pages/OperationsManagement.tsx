@@ -1,51 +1,187 @@
 import { useState, useMemo } from 'react'
 import {
-  Row, Col, Card, Table, Tag, Space, Button, Progress, Tabs,
-  Select, DatePicker, Modal, Form, Input, message, Tooltip, Statistic, List
+  Row, Col, Card, Table, Tag, Space, Button, Progress,
+  Select, DatePicker, Modal, Form, Input, message, List, Typography,
+  Descriptions, Empty
 } from 'antd'
 import {
   ToolOutlined, CheckCircleOutlined, ClockCircleOutlined,
-  WarningOutlined, FileTextOutlined, TeamOutlined, DollarOutlined,
-  SearchOutlined, PlusOutlined, ExclamationCircleOutlined
+  DollarOutlined, PlusOutlined, SearchOutlined, TeamOutlined,
+  RiseOutlined, FallOutlined, FileTextOutlined, CalendarOutlined,
+  BulbOutlined, AlertOutlined
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { workOrders, inspectionBatches, streetLamps } from '@/data/mockData'
-import type { WorkOrder, InspectionBatch } from '@/types'
+import { useDataStore } from '@/store/dataStore'
+import { faultTypeDistribution } from '@/data/mockData'
+import type { InspectionBatch, WorkOrder, StreetLamp, Alert } from '@/types'
 import dayjs from 'dayjs'
 
 const { RangePicker } = DatePicker
 const { TextArea } = Input
+const { Text } = Typography
+
+interface BatchDetail {
+  batch: InspectionBatch
+  faultLamps: StreetLamp[]
+  pendingAlerts: Alert[]
+  pendingWorkOrders: WorkOrder[]
+}
 
 export default function OperationsManagement() {
+  const {
+    currentUser,
+    filteredWorkOrders,
+    filteredInspectionBatches,
+    filteredLamps,
+    filteredAlerts,
+    addWorkOrder,
+    addInspectionBatch
+  } = useDataStore()
+
   const [activeTab, setActiveTab] = useState('workorders')
   const [batchModalVisible, setBatchModalVisible] = useState(false)
   const [orderModalVisible, setOrderModalVisible] = useState(false)
-  const [selectedOrder, setSelectedOrder] = useState<WorkOrder | null>(null)
-  const [form] = Form.useForm()
+  const [batchDetailVisible, setBatchDetailVisible] = useState(false)
+  const [selectedBatchDetail, setSelectedBatchDetail] = useState<BatchDetail | null>(null)
+  const [scheduleDate, setScheduleDate] = useState<string>(dayjs().format('YYYY-MM-DD'))
+  const [scheduleTeam, setScheduleTeam] = useState<string>('all')
+  const [orderForm] = Form.useForm()
+  const [batchForm] = Form.useForm()
+
+  // 运维组列表（从巡检员推断）
+  const teams = useMemo(() => {
+    const teamSet = new Set<string>()
+    teamSet.add('运维一组')
+    teamSet.add('运维二组')
+    teamSet.add('运维三组')
+    teamSet.add('运维四组')
+    return Array.from(teamSet)
+  }, [])
+
+  // 按日期和运维组分组的巡检排班数据
+  const scheduleData = useMemo(() => {
+    // 扩展批次数据，添加运维组、未完成工单数等信息
+    const batchesWithInfo = filteredInspectionBatches.map(batch => {
+      const relatedOrders = filteredWorkOrders.filter(o => 
+        o.district === batch.district && 
+        batch.roads.some(r => o.road.includes(r) || r.includes(o.road))
+      )
+      const pendingOrders = relatedOrders.filter(o => 
+        ['pending', 'processing', 'approved1', 'approved2'].includes(o.status)
+      )
+
+      // 根据巡检员分配运维组
+      let team = '运维一组'
+      if (batch.inspector.includes('李') || batch.inspector.includes('赵')) team = '运维二组'
+      if (batch.inspector.includes('王')) team = '运维三组'
+      if (batch.inspector.includes('钱') || batch.inspector.includes('孙')) team = '运维四组'
+
+      return {
+        ...batch,
+        team,
+        pendingOrderCount: pendingOrders.length,
+        pendingOrders
+      }
+    })
+
+    // 按日期分组
+    const dateGroups = new Map<string, typeof batchesWithInfo>()
+    batchesWithInfo.forEach(batch => {
+      if (!dateGroups.has(batch.scheduleDate)) {
+        dateGroups.set(batch.scheduleDate, [])
+      }
+      dateGroups.get(batch.scheduleDate)!.push(batch)
+    })
+
+    // 按运维组过滤
+    if (scheduleTeam !== 'all') {
+      dateGroups.forEach((batches, date) => {
+        dateGroups.set(date, batches.filter(b => b.team === scheduleTeam))
+      })
+      // 清空空数组的日期
+      Array.from(dateGroups.keys()).forEach(date => {
+        if (dateGroups.get(date)!.length === 0) {
+          dateGroups.delete(date)
+        }
+      })
+    }
+
+    // 按日期排序
+    const sortedDates = Array.from(dateGroups.keys()).sort()
+    return sortedDates.map(date => ({
+      date,
+      batches: dateGroups.get(date)!
+    }))
+  }, [filteredInspectionBatches, filteredWorkOrders, scheduleTeam])
+
+  // 获取巡检批次详情
+  const getBatchDetail = (batch: InspectionBatch): BatchDetail => {
+    const faultLamps = filteredLamps.filter(l => 
+      l.province === batch.province &&
+      l.city === batch.city &&
+      l.district === batch.district &&
+      batch.roads.some(r => l.road === r) &&
+      l.status === 'fault'
+    )
+
+    const pendingAlerts = filteredAlerts.filter(a => 
+      a.province === batch.province &&
+      a.city === batch.city &&
+      a.district === batch.district &&
+      !a.isHandled &&
+      batch.roads.some(r => a.road === r)
+    )
+
+    const pendingWorkOrders = filteredWorkOrders.filter(o => 
+      o.province === batch.province &&
+      o.city === batch.city &&
+      o.district === batch.district &&
+      batch.roads.some(r => o.road === r) &&
+      ['pending', 'processing', 'approved1', 'approved2'].includes(o.status)
+    )
+
+    return { batch, faultLamps, pendingAlerts, pendingWorkOrders }
+  }
 
   const workOrderStats = useMemo(() => {
-    const completed = workOrders.filter(o => o.status === 'completed')
+    const orders = filteredWorkOrders
+    const completed = orders.filter(o => o.status === 'completed')
     const totalCost = completed.reduce((s, o) => s + (o.cost || 0), 0)
-    const avgResponse = workOrders.filter(o => o.responseTime).reduce((s, o) => s + (o.responseTime || 0), 0) / (completed.length || 1)
+    const avgResponse = completed.filter(o => o.responseTime).reduce((s, o) => s + (o.responseTime || 0), 0) / (completed.length || 1)
     const avgRepair = completed.reduce((s, o) => s + (o.repairTime || 0), 0) / (completed.length || 1)
+
+    const types = ['fault', 'inspection', 'emergency', 'adjustment'] as const
+    const typeStats = types.map(t => ({
+      type: t,
+      count: orders.filter(o => o.type === t).length,
+      completed: orders.filter(o => o.type === t && o.status === 'completed').length
+    }))
+
     return {
-      total: workOrders.length,
+      total: orders.length,
       completed: completed.length,
-      completionRate: Number(((completed.length / workOrders.length) * 100).toFixed(1)),
+      completionRate: orders.length > 0 ? Number(((completed.length / orders.length) * 100).toFixed(1)) : 0,
       totalCost,
       avgResponseTime: Number(avgResponse.toFixed(1)),
-      avgRepairTime: Number(avgRepair.toFixed(1))
+      avgRepairTime: Number(avgRepair.toFixed(1)),
+      typeStats
     }
-  }, [])
+  }, [filteredWorkOrders])
 
-  const typeStats = useMemo(() => {
-    const types = ['fault', 'inspection', 'emergency', 'adjustment']
-    return types.map(t => ({
-      type: t,
-      count: workOrders.filter(o => o.type === t).length,
-      completed: workOrders.filter(o => o.type === t && o.status === 'completed').length
-    }))
-  }, [])
+  const districtStats = useMemo(() => {
+    const districts = new Set(filteredLamps.map(l => l.district))
+    return Array.from(districts).map(d => {
+      const lamps = filteredLamps.filter(l => l.district === d)
+      const faults = lamps.filter(l => l.status === 'fault').length
+      return {
+        name: d,
+        total: lamps.length,
+        fault: faults,
+        faultRate: Number(((faults / lamps.length) * 100).toFixed(2)),
+        normal: lamps.filter(l => l.status === 'normal').length
+      }
+    }).sort((a, b) => b.faultRate - a.faultRate)
+  }, [filteredLamps])
 
   const weeklyTrendOption = useMemo(() => {
     const weeks = Array.from({ length: 8 }, (_, i) => `第${i + 1}周`)
@@ -59,20 +195,20 @@ export default function OperationsManagement() {
         {
           name: '新建工单',
           type: 'bar',
-          data: [45, 52, 38, 61, 48, 55, 42, 50],
+          data: [45, 52, 38, 61, 48, 55, 42, Math.floor(filteredWorkOrders.length / 2)],
           itemStyle: { color: '#1677ff' },
           barWidth: 18
         },
         {
           name: '完成工单',
           type: 'bar',
-          data: [40, 48, 36, 55, 45, 52, 40, 46],
+          data: [40, 48, 36, 55, 45, 52, 40, workOrderStats.completed],
           itemStyle: { color: '#52c41a' },
           barWidth: 18
         }
       ]
     }
-  }, [])
+  }, [filteredWorkOrders, workOrderStats])
 
   const costTrendOption = useMemo(() => {
     const months = ['1月', '2月', '3月', '4月', '5月', '6月']
@@ -83,33 +219,12 @@ export default function OperationsManagement() {
       xAxis: { type: 'category', data: months },
       yAxis: { type: 'value', name: '万元' },
       series: [
-        {
-          name: '维修成本',
-          type: 'line',
-          stack: 'total',
-          data: [8.5, 9.2, 7.8, 10.5, 9.8, 11.2],
-          areaStyle: { opacity: 0.3 },
-          smooth: true
-        },
-        {
-          name: '耗材成本',
-          type: 'line',
-          stack: 'total',
-          data: [4.2, 4.8, 4.0, 5.5, 5.0, 5.8],
-          areaStyle: { opacity: 0.3 },
-          smooth: true
-        },
-        {
-          name: '人工成本',
-          type: 'line',
-          stack: 'total',
-          data: [6.5, 7.0, 6.2, 8.0, 7.5, 8.5],
-          areaStyle: { opacity: 0.3 },
-          smooth: true
-        }
+        { name: '维修成本', type: 'line', stack: 'total', data: [8.5, 9.2, 7.8, 10.5, 9.8, workOrderStats.totalCost / 10000], areaStyle: { opacity: 0.3 }, smooth: true },
+        { name: '耗材成本', type: 'line', stack: 'total', data: [4.2, 4.8, 4.0, 5.5, 5.0, workOrderStats.totalCost / 20000], areaStyle: { opacity: 0.3 }, smooth: true },
+        { name: '人工成本', type: 'line', stack: 'total', data: [6.5, 7.0, 6.2, 8.0, 7.5, workOrderStats.totalCost / 15000], areaStyle: { opacity: 0.3 }, smooth: true }
       ]
     }
-  }, [])
+  }, [workOrderStats])
 
   const teamPerformanceOption = useMemo(() => {
     const teams = ['运维一组', '运维二组', '运维三组', '运维四组', '运维五组']
@@ -123,35 +238,18 @@ export default function OperationsManagement() {
         { type: 'value', name: '响应小时', min: 0, max: 8 }
       ],
       series: [
-        {
-          name: '完成量',
-          type: 'bar',
-          data: [42, 38, 45, 36, 40],
-          itemStyle: { color: '#1677ff' },
-          barWidth: 14
-        },
-        {
-          name: '一次修复率',
-          type: 'line',
-          data: [92, 88, 95, 86, 90],
-          itemStyle: { color: '#52c41a' }
-        },
-        {
-          name: '平均响应(h)',
-          type: 'line',
-          yAxisIndex: 1,
-          data: [2.5, 3.2, 2.0, 3.8, 2.8],
-          itemStyle: { color: '#faad14' }
-        }
+        { name: '完成量', type: 'bar', data: [42, 38, 45, 36, workOrderStats.completed], itemStyle: { color: '#1677ff' }, barWidth: 14 },
+        { name: '一次修复率', type: 'line', data: [92, 88, 95, 86, 90], itemStyle: { color: '#52c41a' } },
+        { name: '平均响应(h)', type: 'line', yAxisIndex: 1, data: [2.5, 3.2, 2.0, 3.8, workOrderStats.avgResponseTime], itemStyle: { color: '#faad14' } }
       ]
     }
-  }, [])
+  }, [workOrderStats])
 
   const typeTag = (type: string) => {
     const map: Record<string, { text: string; color: string; icon: JSX.Element }> = {
-      fault: { text: '故障维修', color: 'red', icon: <WarningOutlined /> },
-      inspection: { text: '巡检', color: 'blue', icon: <FileTextOutlined /> },
-      emergency: { text: '紧急抢修', color: 'orange', icon: <ExclamationCircleOutlined /> },
+      fault: { text: '故障维修', color: 'red', icon: <FileTextOutlined /> },
+      inspection: { text: '巡检', color: 'blue', icon: <SearchOutlined /> },
+      emergency: { text: '紧急抢修', color: 'orange', icon: <ToolOutlined /> },
       adjustment: { text: '调整优化', color: 'purple', icon: <ToolOutlined /> }
     }
     const t = map[type] || { text: type, color: 'default', icon: null }
@@ -193,69 +291,26 @@ export default function OperationsManagement() {
   }
 
   const workOrderColumns = [
-    {
-      title: '工单号',
-      dataIndex: 'orderNo',
-      key: 'orderNo',
-      width: 150,
-      render: (no: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{no}</span>
-    },
+    { title: '工单号', dataIndex: 'orderNo', key: 'orderNo', width: 150, render: (no: string) => <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{no}</span> },
     { title: '类型', dataIndex: 'type', key: 'type', width: 100, render: (t: string) => typeTag(t) },
     { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true },
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 70, render: (p: string) => priorityTag(p) },
     { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (s: string) => statusTag(s) },
     {
-      title: '位置',
-      key: 'location',
-      width: 160,
-      render: (_: any, r: WorkOrder) => (
-        <span style={{ fontSize: 12, color: '#666' }}>{r.district} · {r.road}</span>
-      )
+      title: '位置', key: 'location', width: 160,
+      render: (_: any, r: WorkOrder) => <span style={{ fontSize: 12, color: '#666' }}>{r.district} · {r.road}</span>
     },
     { title: '负责人', dataIndex: 'assignee', key: 'assignee', width: 90 },
-    {
-      title: '响应时长',
-      dataIndex: 'responseTime',
-      key: 'responseTime',
-      width: 90,
-      render: (t?: number) => t ? `${t}h` : '-'
-    },
-    {
-      title: '费用',
-      dataIndex: 'cost',
-      key: 'cost',
-      width: 90,
-      render: (c?: number) => c ? `¥${c}` : '-'
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'createTime',
-      key: 'createTime',
-      width: 140,
-      render: (t: string) => dayjs(t).format('MM-DD HH:mm')
-    }
+    { title: '响应时长', dataIndex: 'responseTime', key: 'responseTime', width: 90, render: (t?: number) => t ? `${t}h` : '-' },
+    { title: '费用', dataIndex: 'cost', key: 'cost', width: 90, render: (c?: number) => c ? `¥${c}` : '-' },
+    { title: '创建时间', dataIndex: 'createTime', key: 'createTime', width: 140, render: (t: string) => dayjs(t).format('MM-DD HH:mm') }
   ]
 
   const batchColumns = [
+    { title: '批次号', dataIndex: 'batchNo', key: 'batchNo', width: 140, render: (no: string) => <span style={{ fontFamily: 'monospace' }}>{no}</span> },
+    { title: '区域', key: 'location', width: 140, render: (_: any, r: InspectionBatch) => <span>{r.district}</span> },
     {
-      title: '批次号',
-      dataIndex: 'batchNo',
-      key: 'batchNo',
-      width: 140,
-      render: (no: string) => <span style={{ fontFamily: 'monospace' }}>{no}</span>
-    },
-    {
-      title: '区域',
-      key: 'location',
-      width: 140,
-      render: (_: any, r: InspectionBatch) => (
-        <span>{r.district}</span>
-      )
-    },
-    {
-      title: '覆盖路段',
-      dataIndex: 'roads',
-      key: 'roads',
+      title: '覆盖路段', dataIndex: 'roads', key: 'roads',
       render: (roads: string[]) => (
         <Space size={4} wrap>
           {roads.map((r, i) => <Tag key={i}>{r}</Tag>)}
@@ -265,23 +320,66 @@ export default function OperationsManagement() {
     { title: '路灯数', dataIndex: 'lampCount', key: 'lampCount', width: 80, render: (n: number) => `${n}盏` },
     { title: '计划日期', dataIndex: 'scheduleDate', key: 'scheduleDate', width: 110 },
     { title: '巡检员', dataIndex: 'inspector', key: 'inspector', width: 90 },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (s: string) => batchStatusTag(s) }
+    { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (s: string) => batchStatusTag(s) },
+    {
+      title: '操作', key: 'action', width: 100,
+      render: (_: any, record: InspectionBatch) => (
+        <Button type="link" size="small" onClick={() => {
+          setSelectedBatchDetail(getBatchDetail(record))
+          setBatchDetailVisible(true)
+        }}>
+          查看详情
+        </Button>
+      )
+    }
   ]
 
-  const districtStats = useMemo(() => {
-    const districts = new Set(streetLamps.map(l => l.district))
-    return Array.from(districts).map(d => {
-      const lamps = streetLamps.filter(l => l.district === d)
-      const faults = lamps.filter(l => l.status === 'fault').length
-      return {
-        name: d,
-        total: lamps.length,
-        fault: faults,
-        faultRate: Number(((faults / lamps.length) * 100).toFixed(2)),
-        normal: lamps.filter(l => l.status === 'normal').length
-      }
-    }).sort((a, b) => b.faultRate - a.faultRate)
-  }, [])
+  const handleAddOrder = () => {
+    orderForm.validateFields().then((values) => {
+      if (!currentUser) return
+      const newOrder = addWorkOrder({
+        type: values.type,
+        title: values.title,
+        description: values.description,
+        priority: values.priority,
+        reporter: currentUser.name,
+        assignee: values.assignee,
+        district: values.district,
+        road: values.road,
+        province: currentUser.province || '',
+        city: currentUser.city || ''
+      })
+      message.success(`工单 ${newOrder.orderNo} 创建成功`)
+      setOrderModalVisible(false)
+      orderForm.resetFields()
+    })
+  }
+
+  const handleAddBatch = () => {
+    batchForm.validateFields().then((values) => {
+      if (!currentUser) return
+      const newBatch = addInspectionBatch({
+        district: values.district,
+        roads: values.roads || [],
+        scheduleDate: values.scheduleDate.format('YYYY-MM-DD'),
+        inspector: values.inspector,
+        status: 'pending',
+        lampCount: Math.floor(Math.random() * 150 + 50),
+        province: currentUser.province || '',
+        city: currentUser.city || ''
+      })
+      message.success(`巡检批次 ${newBatch.batchNo} 创建成功`)
+      setBatchModalVisible(false)
+      batchForm.resetFields()
+    })
+  }
+
+  const districts = Array.from(new Set(filteredLamps.map(l => l.district)))
+  const roads = Array.from(new Set(filteredLamps.map(l => l.road)))
+
+  const levelText = currentUser?.level === 'national' ? '全国' :
+    currentUser?.level === 'provincial' ? currentUser.province :
+    currentUser?.level === 'municipal' ? currentUser.city : ''
 
   return (
     <div className="page-container">
@@ -291,7 +389,7 @@ export default function OperationsManagement() {
             <div className="stat-label">本月工单总数</div>
             <div className="stat-value">{workOrderStats.total}</div>
             <div className="stat-trend">
-              完成率 {workOrderStats.completionRate}%
+              完成率 <b>{workOrderStats.completionRate}%</b>
             </div>
           </div>
         </Col>
@@ -328,7 +426,7 @@ export default function OperationsManagement() {
         <Col xs={24} md={12} lg={8}>
           <Card title="工单类型统计" className="chart-card">
             <List
-              dataSource={typeStats}
+              dataSource={workOrderStats.typeStats}
               renderItem={(item) => (
                 <List.Item>
                   <List.Item.Meta
@@ -337,7 +435,7 @@ export default function OperationsManagement() {
                   />
                   <Progress
                     type="dashboard"
-                    percent={Math.round((item.completed / item.count) * 100)}
+                    percent={item.count > 0 ? Math.round((item.completed / item.count) * 100) : 0}
                     width={50}
                     size="small"
                   />
@@ -347,7 +445,7 @@ export default function OperationsManagement() {
           </Card>
         </Col>
         <Col xs={24} md={12} lg={8}>
-          <Card title="各区域故障率" className="chart-card">
+          <Card title={`${levelText}各区域故障率`} className="chart-card">
             <List
               dataSource={districtStats}
               size="small"
@@ -389,8 +487,9 @@ export default function OperationsManagement() {
       <Card
         className="chart-card"
         tabList={[
-          { key: 'workorders', tab: '工单管理' },
-          { key: 'inspection', tab: '巡检批次' }
+          { key: 'workorders', tab: `工单管理 (${filteredWorkOrders.length})` },
+          { key: 'inspection', tab: `巡检批次 (${filteredInspectionBatches.length})` },
+          { key: 'schedule', tab: `巡检排班视图` }
         ]}
         activeTabKey={activeTab}
         onTabChange={setActiveTab}
@@ -406,9 +505,11 @@ export default function OperationsManagement() {
                   <option value="completed">已完成</option>
                 </Select>
                 <Button type="primary" size="small" icon={<SearchOutlined />}>查询</Button>
-                <Button size="small" icon={<PlusOutlined />} onClick={() => setOrderModalVisible(true)}>新建工单</Button>
+                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setOrderModalVisible(true)}>
+                  新建工单
+                </Button>
               </>
-            ) : (
+            ) : activeTab === 'inspection' ? (
               <>
                 <Select defaultValue="all" style={{ width: 110 }} size="small">
                   <option value="all">全部状态</option>
@@ -416,7 +517,30 @@ export default function OperationsManagement() {
                   <option value="in_progress">进行中</option>
                   <option value="completed">已完成</option>
                 </Select>
-                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setBatchModalVisible(true)}>新建批次</Button>
+                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setBatchModalVisible(true)}>
+                  新建批次
+                </Button>
+              </>
+            ) : (
+              <>
+                <DatePicker
+                  size="small"
+                  value={dayjs(scheduleDate)}
+                  onChange={(date) => date && setScheduleDate(date.format('YYYY-MM-DD'))}
+                  style={{ width: 140 }}
+                />
+                <Select
+                  value={scheduleTeam}
+                  onChange={setScheduleTeam}
+                  style={{ width: 120 }}
+                  size="small"
+                >
+                  <option value="all">全部运维组</option>
+                  {teams.map(t => <option key={t} value={t}>{t}</option>)}
+                </Select>
+                <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setBatchModalVisible(true)}>
+                  新建批次
+                </Button>
               </>
             )}
           </Space>
@@ -425,54 +549,252 @@ export default function OperationsManagement() {
         {activeTab === 'workorders' ? (
           <Table
             columns={workOrderColumns}
-            dataSource={workOrders}
+            dataSource={filteredWorkOrders}
             rowKey="id"
             pagination={{ pageSize: 10, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
             size="middle"
             scroll={{ x: 1200 }}
           />
-        ) : (
+        ) : activeTab === 'inspection' ? (
           <Table
             columns={batchColumns}
-            dataSource={inspectionBatches}
+            dataSource={filteredInspectionBatches}
             rowKey="id"
             pagination={{ pageSize: 10, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
             size="middle"
             scroll={{ x: 1000 }}
           />
+        ) : (
+          <div style={{ maxHeight: 600, overflowY: 'auto' }}>
+            {scheduleData.length === 0 ? (
+              <Empty description="暂无巡检排班数据" />
+            ) : (
+              scheduleData.map(({ date, batches }) => (
+                <Card
+                  key={date}
+                  title={
+                    <Space>
+                      <CalendarOutlined style={{ color: '#1677ff' }} />
+                      <span>{date}</span>
+                      <Tag color="blue">共 {batches.length} 批次</Tag>
+                    </Space>
+                  }
+                  size="small"
+                  style={{ marginBottom: 12 }}
+                >
+                  <Row gutter={[12, 12]}>
+                    {batches.map(batch => (
+                      <Col xs={24} md={12} lg={8} key={batch.id}>
+                        <Card
+                          size="small"
+                          title={
+                            <Space>
+                              <Tag color="blue" style={{ fontFamily: 'monospace' }}>{batch.batchNo}</Tag>
+                              <TeamOutlined style={{ color: '#666' }} />
+                              <span style={{ fontSize: 13 }}>{batch.team}</span>
+                            </Space>
+                          }
+                          extra={batchStatusTag(batch.status)}
+                          hoverable
+                          onClick={() => {
+                            setSelectedBatchDetail(getBatchDetail(batch))
+                            setBatchDetailVisible(true)
+                          }}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                            <div style={{ fontSize: 12, color: '#666' }}>
+                              <span style={{ marginRight: 12 }}>
+                                <SearchOutlined /> {batch.inspector}
+                              </span>
+                              <span>
+                                <BulbOutlined /> {batch.lampCount}盏路灯
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#666' }}>
+                              区域：{batch.district}
+                            </div>
+                            <div style={{ fontSize: 12 }}>
+                              路段：
+                              <Space size={4} wrap style={{ marginLeft: 4 }}>
+                                {batch.roads.slice(0, 3).map((r, i) => <Tag key={i} size="small">{r}</Tag>)}
+                                {batch.roads.length > 3 && <Tag size="small">+{batch.roads.length - 3}</Tag>}
+                              </Space>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+                              <span style={{ fontSize: 12, color: '#666' }}>
+                                未完工单：
+                                <span style={{ color: batch.pendingOrderCount > 0 ? '#ff4d4f' : '#52c41a', fontWeight: 600, marginLeft: 4 }}>
+                                  {batch.pendingOrderCount}
+                                </span>
+                              </span>
+                              <Button type="link" size="small" style={{ padding: 0 }}>
+                                查看详情 →
+                              </Button>
+                            </div>
+                          </Space>
+                        </Card>
+                      </Col>
+                    ))}
+                  </Row>
+                </Card>
+              ))
+            )}
+          </div>
         )}
       </Card>
+
+      {/* 巡检批次详情弹窗 */}
+      <Modal
+        title={
+          selectedBatchDetail ? (
+            <Space>
+              <Tag color="blue" style={{ fontFamily: 'monospace' }}>{selectedBatchDetail.batch.batchNo}</Tag>
+              <span>{selectedBatchDetail.batch.district} 巡检详情</span>
+            </Space>
+          ) : ''
+        }
+        open={batchDetailVisible}
+        onCancel={() => setBatchDetailVisible(false)}
+        footer={null}
+        width={900}
+      >
+        {selectedBatchDetail && (
+          <div>
+            <Descriptions column={3} bordered size="small" style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="巡检批次">{selectedBatchDetail.batch.batchNo}</Descriptions.Item>
+              <Descriptions.Item label="状态">{batchStatusTag(selectedBatchDetail.batch.status)}</Descriptions.Item>
+              <Descriptions.Item label="计划日期">{selectedBatchDetail.batch.scheduleDate}</Descriptions.Item>
+              <Descriptions.Item label="区域">{selectedBatchDetail.batch.district}</Descriptions.Item>
+              <Descriptions.Item label="巡检员">{selectedBatchDetail.batch.inspector}</Descriptions.Item>
+              <Descriptions.Item label="预计路灯数">{selectedBatchDetail.batch.lampCount}盏</Descriptions.Item>
+              <Descriptions.Item label="覆盖路段" span={3}>
+                <Space size={4} wrap>
+                  {selectedBatchDetail.batch.roads.map((r, i) => <Tag key={i}>{r}</Tag>)}
+                </Space>
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Tabs defaultActiveKey="faults">
+              <Tabs.TabPane 
+                tab={<Space><BulbOutlined style={{ color: '#ff4d4f' }} />故障灯具 ({selectedBatchDetail.faultLamps.length})</Space>} 
+                key="faults"
+              >
+                {selectedBatchDetail.faultLamps.length === 0 ? (
+                  <Empty description="暂无故障灯具" />
+                ) : (
+                  <Table
+                    dataSource={selectedBatchDetail.faultLamps}
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 5 }}
+                    columns={[
+                      { title: '灯具编号', dataIndex: 'code', key: 'code', width: 140, render: c => <span style={{ fontFamily: 'monospace' }}>{c}</span> },
+                      { title: '路段', dataIndex: 'road', key: 'road' },
+                      { title: '类型', dataIndex: 'type', key: 'type', render: t => <Tag>{t}</Tag> },
+                      { title: '功率', dataIndex: 'power', key: 'power', render: p => `${p}W` },
+                      { title: '故障类型', dataIndex: 'faultType', key: 'faultType', render: t => t || '未知' },
+                      { title: '故障时间', dataIndex: 'faultTime', key: 'faultTime', render: t => t ? dayjs(t).format('MM-DD HH:mm') : '-' }
+                    ]}
+                  />
+                )}
+              </Tabs.TabPane>
+              <Tabs.TabPane 
+                tab={<Space><AlertOutlined style={{ color: '#faad14' }} />待处理预警 ({selectedBatchDetail.pendingAlerts.length})</Space>} 
+                key="alerts"
+              >
+                {selectedBatchDetail.pendingAlerts.length === 0 ? (
+                  <Empty description="暂无待处理预警" />
+                ) : (
+                  <Table
+                    dataSource={selectedBatchDetail.pendingAlerts}
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 5 }}
+                    columns={[
+                      { title: '预警级别', dataIndex: 'level', key: 'level', width: 100, render: l => <Tag color={l === 1 ? 'red' : l === 2 ? 'orange' : 'blue'}>{l}级</Tag> },
+                      { title: '预警类型', dataIndex: 'type', key: 'type', width: 120, render: t => {
+                        const map: Record<string, string> = { light_rate: '亮灯率异常', fault_timeout: '故障超时', energy_abnormal: '能耗异常', offline: '设备离线' }
+                        return map[t] || t
+                      }},
+                      { title: '预警标题', dataIndex: 'title', key: 'title' },
+                      { title: '位置', key: 'location', render: (_: any, r: Alert) => `${r.district} · ${r.road}` },
+                      { title: '生成时间', dataIndex: 'createTime', key: 'createTime', render: t => dayjs(t).format('MM-DD HH:mm') }
+                    ]}
+                  />
+                )}
+              </Tabs.TabPane>
+              <Tabs.TabPane 
+                tab={<Space><FileTextOutlined style={{ color: '#1677ff' }} />未完成工单 ({selectedBatchDetail.pendingWorkOrders.length})</Space>} 
+                key="workorders"
+              >
+                {selectedBatchDetail.pendingWorkOrders.length === 0 ? (
+                  <Empty description="暂无未完成工单" />
+                ) : (
+                  <Table
+                    dataSource={selectedBatchDetail.pendingWorkOrders}
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 5 }}
+                    columns={[
+                      { title: '工单号', dataIndex: 'orderNo', key: 'orderNo', width: 140, render: n => <span style={{ fontFamily: 'monospace' }}>{n}</span> },
+                      { title: '类型', dataIndex: 'type', key: 'type', width: 100, render: t => typeTag(t) },
+                      { title: '标题', dataIndex: 'title', key: 'title' },
+                      { title: '优先级', dataIndex: 'priority', key: 'priority', width: 80, render: p => priorityTag(p) },
+                      { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: s => statusTag(s) },
+                      { title: '负责人', dataIndex: 'assignee', key: 'assignee', width: 90 }
+                    ]}
+                  />
+                )}
+              </Tabs.TabPane>
+            </Tabs>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         title="新建巡检批次"
         open={batchModalVisible}
         onCancel={() => setBatchModalVisible(false)}
-        onOk={() => {
-          message.success('巡检批次创建成功')
-          setBatchModalVisible(false)
-        }}
+        onOk={handleAddBatch}
         okText="创建"
+        width={600}
       >
-        <Form layout="vertical">
-          <Form.Item label="所属区域" required>
+        <Form form={batchForm} layout="vertical">
+          <Form.Item
+            label="所属区域"
+            name="district"
+            rules={[{ required: true, message: '请选择区域' }]}
+          >
             <Select placeholder="请选择区域">
-              <option value="南山区">南山区</option>
-              <option value="福田区">福田区</option>
-              <option value="罗湖区">罗湖区</option>
-              <option value="宝安区">宝安区</option>
+              {districts.map(d => <Select.Option key={d} value={d}>{d}</Select.Option>)}
             </Select>
           </Form.Item>
-          <Form.Item label="覆盖路段" required>
-            <Select mode="multiple" placeholder="请选择路段" />
+          <Form.Item
+            label="覆盖路段"
+            name="roads"
+            rules={[{ required: true, message: '请选择路段' }]}
+          >
+            <Select mode="multiple" placeholder="请选择路段">
+              {roads.map(r => <Select.Option key={r} value={r}>{r}</Select.Option>)}
+            </Select>
           </Form.Item>
-          <Form.Item label="巡检日期" required>
+          <Form.Item
+            label="巡检日期"
+            name="scheduleDate"
+            rules={[{ required: true, message: '请选择巡检日期' }]}
+          >
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item label="巡检员" required>
+          <Form.Item
+            label="巡检员"
+            name="inspector"
+            rules={[{ required: true, message: '请选择巡检员' }]}
+          >
             <Select placeholder="请选择巡检员">
-              <option value="张巡检">张巡检</option>
-              <option value="李巡检">李巡检</option>
-              <option value="王巡检">王巡检</option>
+              {['张巡检', '李巡检', '王巡检', '赵巡检', '钱巡检', '孙巡检'].map(n => (
+                <Select.Option key={n} value={n}>{n}</Select.Option>
+              ))}
             </Select>
           </Form.Item>
         </Form>
@@ -482,58 +804,88 @@ export default function OperationsManagement() {
         title="新建工单"
         open={orderModalVisible}
         onCancel={() => setOrderModalVisible(false)}
-        onOk={() => {
-          message.success('工单创建成功')
-          setOrderModalVisible(false)
-        }}
+        onOk={handleAddOrder}
         okText="创建"
         width={600}
       >
-        <Form layout="vertical">
+        <Form form={orderForm} layout="vertical">
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item label="工单类型" required>
+              <Form.Item
+                label="工单类型"
+                name="type"
+                rules={[{ required: true, message: '请选择工单类型' }]}
+              >
                 <Select placeholder="请选择">
-                  <option value="fault">故障维修</option>
-                  <option value="inspection">巡检</option>
-                  <option value="emergency">紧急抢修</option>
-                  <option value="adjustment">调整优化</option>
+                  <Select.Option value="fault">故障维修</Select.Option>
+                  <Select.Option value="inspection">巡检</Select.Option>
+                  <Select.Option value="emergency">紧急抢修</Select.Option>
+                  <Select.Option value="adjustment">调整优化</Select.Option>
                 </Select>
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="优先级" required>
+              <Form.Item
+                label="优先级"
+                name="priority"
+                rules={[{ required: true, message: '请选择优先级' }]}
+              >
                 <Select placeholder="请选择">
-                  <option value="low">低</option>
-                  <option value="medium">中</option>
-                  <option value="high">高</option>
-                  <option value="urgent">紧急</option>
+                  <Select.Option value="low">低</Select.Option>
+                  <Select.Option value="medium">中</Select.Option>
+                  <Select.Option value="high">高</Select.Option>
+                  <Select.Option value="urgent">紧急</Select.Option>
                 </Select>
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item label="工单标题" required>
+          <Form.Item
+            label="工单标题"
+            name="title"
+            rules={[{ required: true, message: '请输入工单标题' }]}
+          >
             <Input placeholder="请输入工单标题" />
           </Form.Item>
-          <Form.Item label="问题描述" required>
+          <Form.Item
+            label="问题描述"
+            name="description"
+            rules={[{ required: true, message: '请输入问题描述' }]}
+          >
             <TextArea rows={3} placeholder="请详细描述问题情况" />
           </Form.Item>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item label="区域" required>
-                <Select placeholder="请选择区域" />
+              <Form.Item
+                label="区域"
+                name="district"
+                rules={[{ required: true, message: '请选择区域' }]}
+              >
+                <Select placeholder="请选择区域">
+                  {districts.map(d => <Select.Option key={d} value={d}>{d}</Select.Option>)}
+                </Select>
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="路段" required>
-                <Select placeholder="请选择路段" />
+              <Form.Item
+                label="路段"
+                name="road"
+                rules={[{ required: true, message: '请选择路段' }]}
+              >
+                <Select placeholder="请选择路段">
+                  {roads.map(r => <Select.Option key={r} value={r}>{r}</Select.Option>)}
+                </Select>
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item label="负责人">
+              <Form.Item
+                label="负责人"
+                name="assignee"
+                rules={[{ required: true, message: '请选择负责人' }]}
+              >
                 <Select placeholder="请选择负责人">
-                  <option value="运维一组">运维一组</option>
-                  <option value="运维二组">运维二组</option>
+                  {['运维一组', '运维二组', '运维三组', '运维四组'].map(n => (
+                    <Select.Option key={n} value={n}>{n}</Select.Option>
+                  ))}
                 </Select>
               </Form.Item>
             </Col>
